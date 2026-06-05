@@ -1,0 +1,1389 @@
+NETWORKS AND HETEROGENEOUS MEDIA
+c American Institute of Mathematical Sciences
+Volume 13, Number 2, June 2018
+
+doi:10.3934/nhm.2018011
+pp. 241–260
+
+STABILITY AND IMPLEMENTATION OF A CYCLE-BASED
+MAX PRESSURE CONTROLLER FOR SIGNALIZED
+TRAFFIC NETWORKS
+
+Leah Anderson
+Dept of Civil and Environmental Engineering
+Univ. of California, Berkeley, Berkeley, CA, USA
+
+Thomas Pumir
+Dept. of Operations Research and Financial Engineering
+Princeton University, Princeton, NJ, USA
+
+Dimitrios Triantafyllos
+TSS-Transport Simulation Systems
+Barcelona, Spain
+
+Alexandre M. Bayen
+Dept of Civil and Environmental Engineering
+Dept. of Electrical Engineering and Computer Science
+Univ. of California, Berkeley, Berkeley, CA, USA
+
+(Communicated by Benedetto Piccoli)
+Abstract. Intelligent use of network capacity via responsive signal control
+will become increasingly essential as congestion increases on urban roadways.
+Existing adaptive control systems require lengthy location-specific tuning procedures or expensive central communications infrastructure. Previous theoretical work proposed the application of a max pressure controller to maximize
+network throughput in a distributed manner with minimal calibration. Yet
+this algorithm as originally formulated has unpractical hardware and safety
+constraints. We fundamentally alter the formulation of the max pressure controller to a setting where the actuation can only update once per multiple time
+steps of the modeled dynamics. This is motivated by the case of a traffic signal
+that can only update green splits based on observed link-counts once per “cycle time” of 60-120 seconds. Furthermore, we extend the domain of allowable
+actuations from a single signal phase to any convex combination of available
+signal phases to model intra-cycle signal changes dictated by pre-selected cycle
+green splits. We show that this extended max pressure controller will stabilize a vertical queueing network given restrictions on admissible demand flows
+that are slightly stronger than those suggested in the original formulation of
+max pressure. We ultimately apply our cycle-based extension of max pressure
+to a simulation of an existing arterial network and provide comparison to the
+control policy that is currently deployed at the modeled location.
+2010 Mathematics Subject Classification. Primary: 90B15, 93C99; Secondary: 90B20.
+Key words and phrases. Adaptive signal control, vertical queueing network, network stability.
+This work was funded by the California Department of Transportation under the Connected
+Corridors program.
+
+241
+
+242
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+1. Introduction. This article investigates the design and stability of decentralized
+controller for vertical queueing networks. In a vertical queueing network, agents
+traveling across the network are stored in point queues that do not inhabit a “horizontal” position along the length of a network edge, but instead are considered to
+be stored in “vertical” stacks at each node. Such models are inherited from fields
+such as supply chain management or internet routing, but are also representative
+of signalized urban traffic networks and have recently regained popularity for use
+in applications of arterial traffic control [6, 1, 17, 20]. The concept of a stabilizing
+network controller, or one which ensures that the mean length of all queues in the
+network remain bounded, is relevant to many applications such as communications
+networks [8, 11, 12] or industrial systems [7, 4, 10].
+In the present work we examine a vertical queueing model in which only a finite
+set of non-conflicting flow movements (or phases) can be permitted to proceed simultaneously across each network node. Phase actuation is dictated by a controller,
+such as a traffic light signaling specific combinations of green lights. Specifically,
+we consider application of a maximum pressure controller.
+Max pressure is a distributed network control policy derived from the concept of
+a “back-pressure” or “MaxWeight” controller, which was first studied in the context
+of routing packets through a multi-hop communications network [16]. It has since
+been introduced to many other networked applications including process scheduling
+[5], manufacturing [15], wireless networks [3] and general stochastic networks [14].
+The idea was applied to road traffic management more recently by [18] as well as
+[19]. The concept is intuitive: at each controlled network node, priority is given to
+the control phase which will be able to service the most demand given knowledge
+of both available upstream demand and the subsequent feasibility of downstream
+queues. It is a particularly attractive concept for control of a signalized urban
+traffic network because it can be operated in a distributed manner on local controller hardware (such as locally-managed traffic lights) but still provides theoretical
+guarantees on network-wide performance. Therefore unlike existing adaptive signal
+control systems such as SCOOT [9] or SCATS [13], max pressure does not require
+communications between each node or central control infrastructure. Also, max
+pressure is a universal algorithm which does not have to be optimized and manually tuned for a given network geometry or expected flows. In fact it operates with
+no a-priori knowledge of demand beyond a basic requirement of serviceability. This
+presents a huge benefit over most existing traffic control systems which require a
+timely and expensive re-timing process in the event of changes in demand patterns.
+The original adaptation of this controller in [18], however, does not fully consider
+the practical limitations on the rate of queue measurement and signal actuation in
+vehicle traffic networks. For example, it has no bound on the rate of signal switches
+which may occur relative to the rate of modeled queue formation and dissipation. In
+implementation, a traffic signal incurs a penalty upon every change in actuation in
+the form of capacity loss due to “intersection clearance time”: a 2-3 second period
+where all movements are given a red light in order to allow traffic from the previous
+phase to clear the intersection before possibly conflicting traffic can be permitted
+to enter. Max pressure also lacks the ability to synchronize adjacent signals in a
+network by constraining the actuation periods of critical phases to fixed relative
+offsets. This feature is valued by traffic managers who wish to promote continuity
+of flow and limit vehicle stops on a preferred throughway. Furthermore, a standard
+max pressure implementation provides no explicit lower bound on the service rate
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+243
+
+of queues on minor approaches where demand may be very low relative to the main
+direction.
+These limitations motivate a new extension of the max pressure algorithm which
+bounds signal switches and can maintain timed cyclical behaviors for signal coordination and queue service equity. While a similar concept was suggested in [18],
+the current work further extends a simple proportional phase controller to allow
+model dynamics to explicitly act at a faster rate than the controller update period.
+We then extend the stability proof of [18] to prove that our cycle-based max pressure (Cb-MP) controller still provides the desired guarantee of queue stability with
+a penalty to the theoretical bound on queue lengths due to the decreased rate of
+controller update.
+The remainder of this article is organized as follows: Sections 2-3 describe the
+modeling framework and standard max pressure controller from [18]; Section 4
+formulates an extended cycle-based max pressure controller; Section 5 proves that
+this extended controller stabilizes a vertical queueing network; finally, Section 6
+presents numerical results provided by this controller using a microscopic traffic
+simulation running in the Aimsun platform.
+2. Network model dynamics. We consider a network of arterial roads with infinite storage capacity, modeled topologically as a graph with road segments (or
+links) being graph edges and intersections being nodes. We require that each link
+in the network has an exit path, or a continuous set of connected links on which
+vehicles can travel from the original link to eventually exit the network. This would
+in fact be the case in a practical road network.
+An individual link l ∈ L can be either at the entry of the network (l ∈ Lent ) or
+in the interior of the network (l ∈ L\Lent ). The inflow on network entry links is
+defined entirely by a random network demand flow. We assume the expectation of
+this randomized boundary demand is known. The inflow on all other links (referred
+to as link demand) depends on observable queues on upstream links and the known
+set of constraints imposed by physical characteristics of the modeled network.
+Each link in the network model can contain multiple queues, each of which correspond to separate movements: all vehicles in a single queue are intending to advance
+onto the same subsequent link. We describe the dynamics of network queues as a
+discrete time dynamical model using the following notation:
+• A movement (l, m) distinguishes an intention to travel from link l to immediately downstream link m;
+• A queue x(l, m)(t) is the number of vehicles on link l waiting to enter link m
+at time step t, and X(t) is the set (vector or matrix) of all the queue lengths
+on the network at time step t;
+• A link capacity C(l, m)(t) is the number of vehicles that can travel from link l
+to link m in time step t given maximum demand on queue x(l, m). To model
+heterogenous driver behaviors we assume that C(l, m)(t) is a random variable,
+but it has known expectation c(l, m).
+is the turn ratio at time t. R is
+• Random variable R(l, m)(t) = Px(l,m)(t)
+k x(l,k)(t)
+assumed to have known expectation r(l, m) ∈ [0, 1].
+• The demand vector d of dimension |Lent | specifies demands at network entry
+links;
+• The flow vector f of dimension |L| denotes flows on all links of the network
+such that fl is the flow in link l.
+
+244
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+The expected flow through an entry link is defined to be equal to the expected
+demand on that link. Because we consider fixed turn ratios, the flow on an internal
+link is a weighted sum of the flows on the upstream neighboring links (with weights
+equal to the relevant expected turn proportions). Hence there is necessarily a linear
+relationship between the expected link flow f and the boundary demand d:
+f = dP
+
+(1)
+
+where the (possibly non-unique) matrix P depends only on observed routing proportions within the network.
+Intersection signal controller. A road intersection is modeled as a node in our
+framework. Controllers (traffic signals) are placed at every node to limit the set of
+queues permitted to discharge at any given time. A set of movements that can be
+simultaneously actuated without flow conflicts is called a phase. Each permissible
+phase for a given intersection can be represented as a binary control matrix S that
+is defined as follows:
+(
+1 if movement (l, m) is discharged in phase
+S(l, m) =
+.
+(2)
+0 otherwise
+We denote the known, finite set of permissible control matrices for a single node as
+U . Note that U can be different for each node, as its construction depends on the
+number and physical arrangement of node entrances and egresses.
+At each modeled time step t, a single control matrix S(t) ∈ U encodes which
+single non-conflicting set of queues approaching the intersection are permitted to
+discharge during that time step. However in this work we consider a relaxed controller which operates on a finite set of contiguous time steps. This relaxed controller
+is defined as a matrix S̃(t), which is populated with elements S̃(l, m) ∈ [0, 1] that
+each represent the fraction of the relevant set of time steps that are allocated to
+the movement {l, m}. Such a relaxed controller must be able to be expressed as a
+convex combination of all S ∈ U ,
+X
+X
+S̃ =
+λS S, with λS ∈ [0, 1] and
+λS = 1.
+(3)
+S∈U
+
+S∈U
+
+This work will demonstrate
+how to optimally select λS for a given set of time
+
+steps t + 1, t + 2, ..., t + τ based only on the
+ state of the network queues at the
+previous time period t − τ, t − (τ − 1), ..., t .
+Queue dynamics. The evolution of network queue lengths X(t) can be seen as a
+Markov chain: the state at time (t + 1) is a function of only the state at time t and
+external demand d,
+X(t + 1) = F (X(t), d).
+
+(4)
+
+Define [ a ∧ b ] := min{a, b}. To describe queue dynamics explicitly, we must make
+a distinction between entry links and internal links: if l ∈ Lent ,
+x(l, m)(t + 1) = x(l, m)(t) + dl (t + 1)R(l, m)(t + 1)
+− [C(l, m)(t + 1)S(l, m)(t + 1) ∧ x(l, m)(t)]
+
+(5)
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+245
+
+and if l ∈ L\Lent ,
+x(l, m)(t + 1) = x(l, m)(t)
+X
++
+[C(k, l)(t + 1)S(k, l)(t + 1) ∧ x(k, l)(t)]R(l, m)(t + 1)
+k
+
+− [C(l, m)(t + 1)S(l, m)(t + 1) ∧ x(l, m)(t)].
+
+(6)
+
+Demand feasibility. We focus on networks for which the boundary inflow demands are feasible—that is, the network is servicing a distribution of inflows for
+which it is possible to find a controller that allows in average more departures than
+arrivals at each link. Note that a stabilizing controller, defined as one that ensures
+that the mean length of all queues remains bounded, would not be possible by
+definition if demands were not feasible.
+Define C(U ) to be the convex hull of the set of permissible control matrices U .
+The following properties are then shown in [18]:
+Property 1. A matrix M is in C(U ) iff ∃ a sequence of control matrices S =
+{S(1), S(2), ..., S(t), ...|S(·) ∈ U } such that ∀(l, m)
+T
+
+M (l, m) = lim inf
+T
+
+1X
+S(l, m)(t).
+T t=1
+
+(7)
+
+The element M (l, m) in (7) can be interpreted as the long-term average proportion of intersection capacity given to movement (l, m). Hence define MS to be the
+long-term control proportion matrix constructed as in (7) using a specific control
+sequence S = {S(1), S(2), ..., S(t), ...}.
+Property 2. A demand d is feasible if and only if ∃ MS ∈ C(U ) and ε > 0 such
+that
+c(l, m)MS (l, m) > fl r(l, m) + ε
+(8)
+where f = dP as in (1).
+Define D0 to be the set of all average demand vectors d that satisfy (8) and are
+therefore feasible.
+A network is stable if the following quantity is bounded:
+T
+o
+1X n
+E |X(t)|1
+T t=1
+
+(9)
+
+P
+where |X|1 = l,m |x(l, m)| and the network state evolves according to dynamics
+under state dynamics (5)-(6).
+3. Max pressure controller. Consider a weight assigned to each queue (l, m) as
+a function of all network queue lengths X:
+X
+w(l, m)(X(t)) = x(l, m)(t) −
+r(m, p)x(m, p)(t)
+(10)
+p∈Out(m)
+
+where Out(m) is the set of all links receiving flow from link m. The pressure γ(S)
+that is potentially alleviated by a control action S at time step t is defined as follows:
+X
+γ(S)(X(t)) =
+c(l, m)w(l, m)(X(t))S(l, m)(t).
+(11)
+l,m
+
+246
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+At each time step t, the standard max pressure controller u∗ (X(t)) explicitly choses
+the phase S ∗ ∈ U that maximizes γ(S)(X(t)):
+S ∗ (t) = u∗ (X(t)) = arg max{γ(S)(X(t))|S ∈ U }.
+
+(12)
+
+Reference [18] shows the following stability result for the standard max pressure
+controller:
+Theorem 3.1. The max pressure control u∗ is stabilizing, i.e. the quantity in
+equation (9) remains bounded, whenever the average demand vector d = {dl } is
+within the set of feasible demands D0 .
+We omit further explanation of the above theorem in this paper for brevity.
+This theoretical guarantee is one of the many attractive qualities of max pressure for controlling vehicular traffic in urban road networks. Yet the controller as
+originally formulated is not practical for application on a signalized traffic network
+for three reasons:
+a) it does not account for capacity reductions (lost time) due to excessive signal
+switching,
+b) it cannot enforce coordination between subsequent intersections for purposes of
+maximizing flow continuity, and
+c) it does not provide guarantees that low-demand queues will be served within a
+finite time period.
+4. Cycle-based max pressure (Cb-MP). The above limitations motivate our
+extension of the standard immediate feedback max pressure control algorithm. In
+the following section, we define a new cycle-based max pressure (Cb-MP) controller
+which bounds the number of signal switches per fixed time period, provides capacity
+for standard signal coordination methods, and can easily guarantee a minimum
+service rate for all intersection phases.
+For safety reasons, an intersection controller cannot switch signal phase actuation
+immediately. Instead, it must incorporate a pause of R ≈ 2.5 seconds in which
+all signal phases have a red light. This clearance time allows all vehicles in the
+previously actuated phase to clear the intersection before a conflicting phase can
+be permitted to use the intersection. In the standard formulation of max pressure,
+the controller chooses an appropriate action based feedback received at every time
+step of the modeled dynamics. To accurately capture queuing behaviors observed
+on arterial roadways, a model would need to operate with a time discretization
+of ∆t < 10 seconds. A signal switch at every time step could therefore result in
+more than 25% loss of intersection service capacity, which is not considered in the
+theoretical examination presented in [18].
+In this work, we explicitly specify the number of signal switches that occur in
+a fixed number of model time steps using the familiar concept of a signal cycle.
+As typical with modern traffic signals Cb-MP rotates through all available signal
+phases within a known time period. We define cycle time τ as a predefined number
+of model time steps and require that each controller phase S must be green for
+some proportion λS ≥ κS of the τ steps, where the minimum green splits κS ∈
+(0, 1) ∀ S ∈ U are parameters selected by a network manager to enforce equity in
+movement actuation.
+The selection of a cycle time τ intuitively affects intersection capacity. Our proof
+of network stability in the following sections relies on the fact that road links are
+undersaturated : that is, the expected demand is served (on average) within a signal
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+247
+
+cycle. To avoid link saturation, we pose the following convex optimization problem
+(extended from that in [2]) to determine minimum constrained feasible actuation
+time Λ∗ :
+X
+Λ∗ = min
+λS
+λ={λS }
+
+S∈U
+
+subject to λS ≥ κS ∀ S ∈ U
+X
+fl r(l, m) <
+λS c(l, m)S(l, m)
+
+(13)
+
+S
+P
+where κS ∈ [0, 1] ∀S ∈ U and S κS < 1. If Λ∗ > 1, the demand is not feasible
+under the set of {κS } for any cycle length. If Λ∗ < 1, then we can define a cycle
+length for which flow is admissible without link saturation. However, this cycle
+length τ must be significantly greater than Λ∗ to account for clearance times. If we
+R
+· |U |)e to be the total number of lost time steps per cycle, a feasible
+define L = d( ∆t
+cycle length τ must satisfy the following condition:
+L
+τ>
+.
+(14)
+1 − Λ∗
+Given an appropriate τ which satisfies (14), the cycle-based max pressure controller
+is a relaxed control matrix that is constructed as follows:
+X
+S̃ ∗ (t) = uc∗ (X(t)) =
+λ∗S S,
+(15)
+S∈U
+
+where {λ∗S } =
+
+arg max
+
+X
+
+λS γ(S) X(bt/τ c)
+
+
+
+(16)
+
+λ1 ,...,λ|U | S∈U
+
+subject to λS ≥ κs ,
+
+X
+
+λS ≤ 1 − Lτ .
+
+S
+
+At time step t = nτ for integer n, the controller uc∗ uses feedback measurements
+x(t) to select a relaxed control matrix S̃ ∗ with components λ∗S that satisfy (16). This
+relaxed controller is then applied for the subsequent τ time steps {t, t + 1, . . . , t +
+τ − 1} before the controller is updated.
+Note that this controller is modeled such that all phases in an intersection are
+simultaneously actuated at some proportion of their maximum flow capacity. This is
+not possible in practice, as many phases will have to make conflicting use of the same
+intersection resources. Hence individual phases S will have to be actuated in series,
+with each having a duration corresponding to a number of “time units” that are
+equal to cycle proportions (λS τ ·∆t). Feedback measurements will then be a measure
+of “average” cycle queue length acquired over a set of measurements spanning the
+previous cycle. If the solution for (16) is not unique, one of the optimal solutions
+is chosen at random using a uniform probability distribution (or according to some
+practical actuation priority criteria chosen by the network manager). Because it can
+be implemented such that phases occur in a predictable order, a controller running
+Cb-MP can be synchronized with neighboring controllers to enforce a “green-wave
+progression” as is standard practice in existing traffic signal control design.
+The Cb-MP controller formulated in (15)-(16) is fundamentally different from
+the standard max pressure formulation in [18] in two ways: first, it only updates
+the controller once every signal cycle (or τ model time steps); second, it applies
+a relaxed phase actuation (which is some convex combination of standard phase
+actuations). In the next section, we address how each of these modifications impact
+the resulting network dynamics, and ultimately show that the application of Cb-MP
+
+248
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+yields a similar stability guarantee to that shown by Varaiya for the standard max
+pressure controller given slightly weaker conditions on demand flow.
+5. Stability of Cb-MP. Define Cκ as the set of convex combinations of control
+matrices with coefficients larger than κ:
+nX
+o
+Cκ =
+λS S λS > κS ∀S ∈ U .
+(17)
+S
+
+Also define a set of undersaturated admissible demands Dκ with elements d such
+that f = dP and
+fl r(l, m) < c(l, m)S̃(l, m).
+(18)
+This condition (also seen in (13)) ensures that a demand d ∈ Dκ can in average be
+served within a single cycle by a relaxed control matrix that maintains a specified
+minimum time allocation for each phase.
+Theorem 5.1. The cycle-based max pressure controller defined in (15)-(16) stabilizes a network whenever the demand is within a set of feasible undersaturated
+demands Dκ .
+The remainder of this section proves Theorem 5.1 by finding a bound on (9) given
+a cycle-based max pressure controller. The structure of this proof is as follows:
+1) First, we introduce the concept of a τ -updated controller and we show that
+switching control only once every τ time steps does not impact the set of feasible
+demands.
+2) Then we explain the mathematical structure used in [18] to derive a bound for
+the expected network state (9).
+3) Next we define an intermediate “relaxed max pressure” formulation to demonstrate the impacts of expanding the domain of control actions to relaxed controllers which are convex combinations of allowable phase matrices.
+4) We then demonstrate the intra-cycle queue dynamics given a τ -updated relaxed
+controller.
+5) We combine the above steps to show that queue stability holds given a Cb-MP
+controller with both relaxed actuation and τ -updating.
+6) Finally, we compare the our Cb-MP queue length bounds to those originally
+derived in [18] to illustrate the increase due to cycle-updating.
+5.1. Properties of a τ -updated controller. Suppose that we impose that the
+control actuation S ∗ (t) can only be updated every τ model time steps. A resulting
+τ -updated control sequence is composed of a single control matrix repeated for τ
+time steps of the model dynamics:
+
+S(nτ + 1) = S(nτ + 2) = . . . = S (n + 1)τ .
+(19)
+In the Appendix of this paper, we prove that the set of demands that can be
+accommodated using τ -updated control sequences is the same set of feasible flows
+as in (8). This equivalence becomes intuitive when one considers that our definition
+of feasible flows considers only the long-term (more precisely, infinite-term) average
+of both demand and service rates, and any infinite control sequence with limited
+admissible phases can be re-arranged to form a τ -updated sequence for some τ .
+As will be shown in Section 5.6, occasional updating will also lead to an increased
+bound on queue lengths relative to the standard max pressure setting.
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+249
+
+5.2. Formulating a queue bound. Our ultimate goal is to derive a bound for
+the average expected queue state (9). The approach taken in this work follows that
+of [18]: we bound the incremental model-step queue increase |X(t
+P + 1) − X(t)| and
+then recursively compute a bound on average queue lengths t∈[0,T ] E{|X(t)} for
+an arbitrary time horizon T .
+Begin by considering the expectation of the following function of queue state
+perturbation conditioned on the past queue state:
+|X(t + 1)|2 − |X(t)|2 = |X(t) + δ(t)|2 − |X(t)|2
+
+(20)
+
+= 2X(t)T δ(t) + |δ(t)|2
+= 2α(t) + β(t)
+with δ(t) = X(t + 1) − X(t), α(t) = X(t)T δ(t), and β(t) = |δ(t)|2 . We continue by
+addressing bounds on β and α separately.
+First we consider β(t) = |δ(t)|2 .
+Lemma 5.2.
+β(t) = δ(t)
+
+
+2
+
+≤ N B2
+
+(21)
+
+P
+
+where B = max C(l, m), k C(k, l), d(l, m) , N is the number of queues in the
+network, C(l, m) is the maximum value of the random service rate C(l, m)(t), and
+d(l, m) is the maximum value of random demand d(l, m).
+The proof of Lemma 5.2 is exactly the same as presented in [18] and will therefore not be repeated here. Note that because these bounds hold for any arbitrary
+S(l, m)(t) ∈ [0, 1], this bound on β is trivially extended to any convex combination
+of control matrices; hence it is still valid in our extension.
+Now we examine a bound on α(t) = X(t)T δ(t). Again following [18], we define
+additional sub-terms:
+
+X
+E{α(t)|X(t)} =
+w(l, m)(t) · fl r(l, m)
+(22)
+l∈L,m
+
+o
+n
+
+− E C(l, m)(t + 1)S(l, m)(t) ∧ x(l, m)(t) X(t)
+= α1 (t) + α2 (t)
+with
+α1 (t) =
+
+X
+
+[fl r(l, m) − c(l, m)S(l, m)(t)] w(l, m)(t)
+
+(23)
+
+h
+S(l, m)(t)w(l, m)(t) · c(l, m)−
+
+(24)
+
+l∈L,m
+
+α2 (t) =
+
+X
+l∈L,m
+
+n
+oi
+
+E C(l, m)(t + 1) ∧ x(l, m)(t) X(t) .
+Lemma 5.3. For all l, m, t,
+α2 (t) ≤
+
+X
+
+c(l, m)C(l, m).
+
+(25)
+
+l∈L,m
+
+The proof of Lemma 5.3 again directly follows that presented in [18]; an extension
+from a binary controller S ∈ {0, 1} to a relaxed controller S̃ ∈ [0, 1] is trivial.
+In fact, the extension made here only affects the α1 (t) term. To demonstrate
+a bound on α1 (t) given application of a cycle-based max pressure controller uc∗ ,
+
+250
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+we first examine the stability of a standard max pressure controller using relaxed
+controllers with minimum phase proportion constraints and a stricter limitation on
+network demands. We will then show that a τ -updated cycle-based max pressure
+controller also stabilizes a network, but results in an increase in queue length bounds
+that is proportional to cycle length τ .
+5.3. Effect of a relaxed controller. Define an intermediate “relaxed max pressure” policy in which relaxed controllers are applied at the standard max pressure
+update rate (once per time step of the model dynamics). This situation was suggested in [18] to simulate enforcing minimum phase proportions in a cycle formulation of max pressure. Yet this proposal unrealistically models “cycle” updates
+at the same rate as the model of queueing and discharging behaviors (hence the
+introduction of the τ -updated formulation in this work). Nonetheless, we use this
+intermediate formulation to demonstrate that queue stability is still achieved upon
+use of a relaxed controller.
+Lemma 5.4. If a “relaxed” max pressure control policy S̃ ∗ is updated and applied at
+each time step t and the demand d is in the set of feasible undersaturated demands
+Dκ , then there exists an ε > 0, η > 0 such that
+α1 (t) ≤ −εη X(t) .
+
+(26)
+
+Proof of Lemma 5.4. Consider the relaxed max pressure control matrix S̃ ∗ defined
+in (15) for τ = 1. By construction, ∀ S̃ ∈ Cκ
+X
+X
+c(l, m)w(l, m)(X(t))S̃(l, m) ≤
+c(l, m)w(l, m)(X(t))S̃ ∗ (l, m)
+l,m
+
+l,m
+∗
+
+with equality only if S̃ = S̃ . Thus ∀ (S̃ ∈ Cκ ) 6= S̃ ∗ ,
+X
+
+fl r(l, m) − c(l, m)S̃ ∗ (l, m)(t) w(l, m)(X(t))
+
+(27)
+
+l,m
+
+<
+
+X
+
+fl r(l, m) − c(l, m)S̃(l, m) w(l, m)(X(t)).
+l,m
+
+If the demand flow is admissible according to (18), then ∃ Ŝ ∈ Cκ and some small
+ε > 0 such that
+(
+fl r(l, m) + ε if w(l, m)(X(t)) > 0
+c(l, m)Ŝ(l, m) =
+.
+0
+otherwise
+Therefore,
+α1 (t) =
+
+X
+[fl r(l, m) − c(l, m)S̃ ∗ (l, m)(t)]w(l, m)(X(t))
+l,m
+
+X
+
+<
+fl r(l, m) − c(l, m)Ŝ(l, m)(t) w(l, m)(X(t))
+l,m
+
+= −ε
+
+X
+
+max{w(l, m)(X(t)), 0}
+
+l∈L,m
+
++
+
+X
+
+fl r(l, m) min{w(l, m)(X(t)), 0}.
+
+(28)
+
+l∈L,m
+
+P
+We assume that by our choice of Ŝ, fl r(l, m) > ε. Hence α1 (t) < −ε l,m w(l, m)(t).
+Given the linearity of (10) and the known properties of r(l, m)(t), it can be show
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+that
+(26).
+
+P
+
+l,m w(l, m)(t) ≥ η|X(t)| for some η > 0.
+
+251
+
+This completes the derivation of
+
+For ease of notation, now combine (21), (25) and (26) to obtain the following
+expression given application of the “relaxed max pressure” controller:
+n
+o
+n
+o
+E |X(t + 1)|2 − |X(t)|2 |X(t) = E 2α(t) + β(t)
+X
+< −2εη |X(t)| + 2
+[c(l, m)C(l, m)] + N B 2
+(29)
+l∈L,m
+
+where N and B are as in (21).
+5.4. Intra-cycle queue bound. Next we establish a bound on queue growth in a
+single time step between controller updates.
+Lemma 5.5. Assuming a cycle-based max pressure controller with an cycle steps
+τ beginning at time t, the following bound on state perturbation holds for all steps
+since update p ∈ [0, τ − 1]:
+n
+o
+E |X(t + p + 1)|2 − |X(t + p)|2 X(t) . . . X(t + p)
+
+for
+
+< Y + h(p) − 2εη|X(t + p)|
+X
+Y =2
+c(l, m)C(l, m) + N B 2
+and
+
+(30)
+(31)
+
+l,m
+
+
+X
+
+h(p) = 2pN B εη +
+fl r(l, m) + c(l, m) .
+
+(32)
+
+l,m
+
+Proof of Lemma 5.5. As in Lemmas 5.2-5.4 above, begin by dividing the argument
+of (30) into three parts: |X(t+p+1)|2 −|X(t+p)|2 = 2(α1 (t+p)+α2 (t+p))+β(t+p),
+where β, α1 and α2 are quantities that depend on the controller applied at (t + p):
+β(t + p) = |X(t + p + 1) − X(t + p)|2
+
+X
+α1 (t + p) = w(l, m)(X(t + p)) ·
+fl r(l, m) − c(l, m)S(l, m)(t)
+
+(33)
+(34)
+
+l,m
+
+α2 (t + p) = w(l, m)(X(t + p)) ·
+
+X
+
+c(l, m)S(l, m)(t)
+
+l,m
+
+n
+o
+
+− E C(l, m)(t + p + 1) ∧ x(l, m)(t + p) X(t + p)
+
+(35)
+
+Bounds on the expectations of β(·) and α2 (·) were previously established for any
+binary or relaxed control matrix in (21) and (25), respectively. Thus we already
+know that:
+n
+o
+E |X(t + p + 1)|2 −|X(t + p)|2 |X(t) . . . X(t + p − 1)
+n
+o
+X
+<2
+c(l, m)C(l, m) + N B 2 + E 2α1 (t + p) .
+(36)
+l,m
+
+The remainder of the bound proposed in (30) originates from the 2α1 (t + p) term,
+which is directly dependent on the explicit form of the controller S. Rewrite 2 · α1
+
+252
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+from (34) as follows:
+X
+2
+w(l, m)(X(t + p))[fl r(l, m) − c(l, m)S(l, m)(t)]
+l,m
+
+=2
+
+X
+
+w(l, m)(X(t))[fl r(l, m) − c(l, m)S(l, m)(t)]
+
+l,m
+
++2
+
+
+
+o
+Xn
+w(l, m) X(t + p) − X(t) · [fl r(l, m) − c(l, m)S(l, m)(t)]
+l,m
+
+= ξ1 (t, p, S) + ξ2 (t, p, S)
+for
+ξ1 (t, S) = 2
+
+X
+
+w(l, m)(X(t))[fl r(l, m) − c(l, m)S(l, m)(t)]
+
+l,m
+
+and
+ξ2 (t, p, S) = 2
+
+
+
+o
+Xn
+w(l, m) X(t + p) − X(t) · [fl r(l, m) − c(l, m)S(l, m)(t)] .
+l,m
+
+By Lemma 5.4 we know that ξ1 (t, S) < −2εη|X(t)|. Because |X(t)| = |X(t + p) −
+(X(t + p) − X(t))| > |X(t + p)| − |X(t + p) − X(t)|, we find that
+
+ξ1 (t, p, S) < −2εη |X(t + p)| − |X(t + p) − X(t)|
+< −2εη|X(t + p)| + 2εη
+= −2εη|X(t + p)| + 2εη
+
+p
+X
+i=1
+p
+X
+
+|X(t + i) − X(t + i − 1)|
+|δ(t + i − 1)|.
+
+(37)
+
+i=1
+
+So by (37) and (21),
+(
+X
+
+ξ1 (t, S) < 2εηp
+
+)
+
+max C(l, m),
+
+X
+
+l,m
+
+C(k, l), d(l, m)
+
+− 2εη|X(t + p)|
+
+k
+
+
+
+= 2εη · pN B − |X(t + p)| .
+
+(38)
+
+To bound ξ2 , we study the term
+w(l, m)(X(t + p)) − w(l, m)(X(t))
+=
+=
+
+p
+X
+
+w(l, m)(X(t + n)) − w(l, m)(X(t + n − 1))
+
+n=1
+p n
+X
+
+x(l, m)(t + n) − x(l, m)(t + n − 1)
+
+n=1
+
+−
+
+X
+
+o
+[x(m, s)(t + n) − x(m, s)(t + n − 1)] · r(m, s)
+
+s∈Out(m)
+
+=
+
+p
+X
+
+w(l, m)(δ(t + n − 1))
+
+(39)
+
+n=1
+
+By (21) and the fact that w(·) is linear,
+|w(l, m)(δ(t + n − 1))| < N B.
+
+(40)
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+253
+
+Plugging (40) back into the definition of ξ2 , we obtain
+X
+
+p
+X
+ξ2 (t, p, S) = 2
+[fl r(l, m) − c(l, m)S(l, m)(t)] ·
+w(l, m)(δ(t + n − 1))
+n=1
+
+l,m
+
+p X
+n
+o
+X
+X
+X
+<2
+[fl r(l, m) − c(l, m)S(l, m)(t)] ·
+max C(u, v),
+C(k, u), d(u, v)
+u,v
+
+n=1 l,m
+
+= 2N B
+
+k
+
+p X
+X
+
+[fl r(l, m) − c(l, m)S(l, m)(t)].
+
+(41)
+
+n=1 l,m
+
+Also note that
+p X
+X
+
+[fl r(l, m) − c(l, m)S(l, m)(t)] < p
+
+n=1 l,m
+
+X
+[fl r(l, m) + c(l, m)]
+
+(42)
+
+l,m
+
+so (41) becomes
+ξ2 (t, p, S) < 2N Bp ·
+
+
+X
+[fl r(l, m) + c(l, m)] .
+
+(43)
+
+l,m
+
+Substituting (38) and (43) into (36) yields (30).
+5.5. Network queue bound. Given Lemmas 5.2-5.5, we show that for a time t
+within any number K of τ -updated cycles, the following quantity is bounded:
+Kτ n
+o
+X
+E |X(t + 1)|2 − |X(t)|2 |X(t)
+t=1
+
+=
+
+K−1
+−1
+X τX
+
+n
+o
+E |X(t + p + 1)|2 − |X(t + p)|2 |X(t + p)
+
+t=1 p=0
+
+<
+
+−1
+K−1
+X τX
+
+(Y + h(p) − 2εη|X(t + p)|)
+
+t=1 p=0
+
+< −2εη
+
+Kτ
+X
+
+τ
+−1
+
+
+X
+|X(t)| + (K − 1) τ Y +
+h(p)
+
+t=1
+
+(44)
+
+p=0
+
+which, when taking the expectation, yields
+Kτ
+τ
+−1
+n
+o
+n
+o
+X
+X
+E |X(Kτ + 1)|2 − |X(1)|2 < −2εη
+E |X(t)| + (K − 1)(τ Y +
+h(p)).
+t=1
+
+p=0
+
+Rearranging gives
+Kτ
+o
+1 X n
+E |X(t)|
+Kτ t=1
+τ −1
+n
+o
+
+1
+τ −1 X
+E |X(1)|2 − |X(Kτ + 1)|2 +
+h(p) + τ Y
+2εηKτ
+2εηKτ p=0
+!
+τ
+−1
+n
+o
+X
+1
+1
+2
+<
+E |X(1)| +
+h(p) + τ Y .
+2εη Kτ
+2εητ p=0
+
+<
+
+(45)
+
+254
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+By (9), the bound
+2εη
+
+Kτ
+−1
+o 1 τX
+o
+n
+1 X n
+1
+E |X(t)| < Kτ
+E |X(1)|2 +
+h(p) + Y
+Kτ t=1
+τ p=0
+
+(46)
+
+establishes that the cycle-based max pressure controller uc∗ (X(t)) defined in (15)
+will stabilize a vertical queueing network with dynamics X(t) as in (5)-(6).
+5.6. Increase in queue bounds. The following bound on network queue state
+for a standard max pressure controller is derived in [18] (for Y as in (31)):
+2εη
+
+T
+o
+o
+1 n
+1X n
+E |X(t)| < E |X(1)|2 + Y.
+T t=1
+T
+
+(47)
+
+Notice that by comparison between (47) and (46), the bound on the long-term sum
+of expected network queues in cycle-based max pressure is larger by a term that
+increases linearly in cycle length τ :
+τ −1
+
+
+1 X
+1 X
+h(p) = (τ − 1)N B 1 +
+fl r(l, m) + c(l, m) .
+(48)
+2εητ p=0
+εη
+l,m
+
+6. Numerical implementation. To demonstrate the effectiveness of ours algorithm, a cycle-based max pressure controller was implemented on a network of 11
+signalized intersections modeled in the Aimsun, a commonly-used microsimulation
+platform. While microsimulation dynamics do not precisely represent the queuing
+behaviors represented above, the following results are provided as a valuable proofof-concept of this controller in an environment that is actually more realistic and
+applicable than the vertical queueing model described in this work.
+The specific model used in this work was generated as part of the I-15 Integrated
+Corridor Management project undertaken by the San Diego Association of Governments (SANDAG) in San Diego, CA. Demand and other model parameters are
+calibrated to match the morning peak period (5:00 AM to 10:00 AM).
+
+Figure 1. The chosen network was calibrated to represent realistic
+demands and physical parameters observed on a stretch of Black
+Mountain Road near the I-15 freeway in San Diego, California.
+This section of road is currently controlled using an offset-optimized actuatedcoordinated control scheme. Under this system, each signal operates with a fixed
+cycle time of 100 seconds and a fixed phase ordering, but uses instantaneous feedback of intersection vehicle approaches to adjust cycle green splits (effectively λi )
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+255
+
+within fixed minimum and maximum green time constraints per cycle. This control algorithm is coded and calibrated in the SANDAG Aimsun model to represent
+realistic conditions and was therefore deemed an appropriate benchmark for performance comparison to Cb-MP.
+Six variations of Cb-MP were implemented. First, a version with a cycle length of
+100 seconds and minimum green time constraints of 10 seconds for each available signal phase was used to closely match the operational constraints of the existing fullyactuated controller. The relative offsets for the southbound coordination phases in
+this implementation were the same as those used in the actuated-coordinated system. We then ran variations which extended the cycle time for Cb-MP to 120, 140,
+160, 180, and 200 seconds to demonstrate the effect of increased cycle time τ on
+observed queue lengths.
+To compare performance, we calculated vehicle service rates, average delay, average number of stops and stopped time, and mean and maximum queue lengths that
+were modeled using each controller. These metrics were only calculated for vehicles
+and links corresponding to the southbound direction on Black Mountain Road as
+well as the short connections to the I-15 freeway on westbound Mira Mesa Blvd
+and eastbound Mirimar Rd. This pathway simulates a viable “freeway-alternative”
+in the congested direction during the morning peak period. During implementation, the Cb-MP algorithm most often chose to give actuation priority to this
+high-demand Southbound direction, as expected.
+The comparison of network vehicle counts in Figure 2 suggests that Cb-MP is able
+to service approximately the same volumes as the optimized actuated-coordinated
+control when cycle times were comparable. The higher cycle length Cb-MP implementations are omitted from this plot for clarity; these controllers resulted in higher
+variations of vehicle service between 5-minute periods but ultimately only reduced
+total service rates slightly.
+
+Figure 2. Cb-MP demonstrated service rates that are consistent
+with a fully-actuated control system for similar cycle lengths.
+Yet distinct differences between the fully-actuated and Cb-MP controllers were
+observed in measurements of delays. Figure 3 compares the average vehicle delay
+given fully-actuated and max pressure control with the same cycle length. It is
+apparent that while the fully-actuated controller produces less delay when demand
+is far below network capacity, Cb-MP outperforms the existing controller given
+
+256
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+consistently high demand; it imposes less delay with a noticeably smaller variance.
+This may not be surprising given known deficiencies in actuated controllers, however
+it is important to point out that this implementation of max pressure produces very
+promising network delays with almost no controller parameters that require tuning.
+
+Figure 3. Cb-MP outperforms the actuated controller given high
+demand in terms of vehicle delay.
+Despite maintaining the same relative offsets for actuation of the main (coordination) direction as the fully actuated controller, Cb-MP induced slightly more
+stops during a vehicle’s south-bound journey across the network. Again, this may
+be expected given the stop-minimizing design objectives of the fully-actuated system: the small but consistent differences in average vehicle-stops shown in Figure
+4 are likely caused by the on-demand service extensions provided for low density
+“back-of-queue” arrivals in the fully-actuated system. Notice that the average vehicle stopped time is actually lower in Cb-MP than with the fully actuated system
+during peak demand, which is consistent with the estimates of total delay demonstrated in Figure 3.
+The higher cycle length Cb-MP implementations are again omitted from Figures
+3-4 for clarity, yet it is important to note that higher cycle lengths predictably led
+the longer stops and more delay, as vehicles which encountered a red light would
+have to wait longer for the cycle to reach their desired green phase. This increase
+in wait time also corresponds to the predicted larger queues.
+Figure 5 demonstrates the increase in mean queue lengths with increase in cycle
+length τ . While the linear increase in maximum queue length derived in (48) is not
+explicitly depicted in the observations, these results appear to remain consistent
+with such an upper bound.
+7. Conclusion. The numerical implementation of cycle-based max pressure in Section 6 suggests a promising alternative for signal control in periods of high demand
+where the performance of existing actuated controllers is known to deteriorate. It
+is an intuitive and scalable control algorithm that is appealing because it maintains
+theoretical network-wide performance guarantees without the need for centralized
+communication or control centers. The cyclical operation of Cb-MP can still maintain the flow-progression benefits obtained from existing offset optimization algorithms along a prioritized route, as demonstrated by the fact that the average number of vehicle-stops on the southbound route only increases slightly using Cb-MP
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+257
+
+Figure 4. While Cb-MP caused more vehicle stop events, stoppage times were similar to those observed using the actuated controller.
+
+Figure 5. Observed queues increase with cycle length using CbMP control.
+over an implementation of the optimized actuated system. Because the cycle splits
+are more predictable in Cb-MP than in current actuated-coordinated algorithms,
+
+258
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+it may even be possible to further optimize progression on multiple (conflicting)
+routes with additional linear constraints on cycle splits in (16).
+Furthermore, Cb-MP is a widely-applicable algorithm which requires significantly
+less tuning and site-specific adjustment than the typical fully-actuated control system. For example, the timing parameters for a fully-actuation system deployed on
+networks such as the SANDAG site referenced above are often a result of many
+hours of both model-based and heuristic optimization procedures for a specific network geometry and expected demand. Yet in our implementation, the generalized
+Cb-MP algorithm with arbitrary reasonable minimum green parameters achieved
+approximately equal performance without requiring any knowledge of location or
+demand.
+By addressing the practical problem of lost capacity due to frequent switching,
+our extension of the proofs of [18] brings the concept of max pressure closer to
+a realistic implementation. Yet it is important to point out that existing sensing
+infrastructure does not typically provide the capabilities necessary to accurately
+measure approaching link-counts, nor does it provide any measurement of downstream link state.
+Future work should also address limitations of the unrealistic assumptions inherent in the vertical queueing model framework, such as the concept of infinite
+link buffer size. In practice, over-saturation could cause unmodeled instabilities in
+a traffic network if expected queue bounds exceed physical road storage.
+One could also consider multiple ways in which the performance of Cb-MP could
+benefit from heuristic modification, such as enforcing a maximum value of the green
+split λl as a function of queue measurement xl to prevent wasted green in a given cycle. Our extended proof of stability should hold for any additional linear constraints
+on λ in (16) (which maintain the concept of a relaxed, τ -updated controller) given
+that there exists any controller satisfying these constraints for which the network
+demand is feasible according to (18).
+Appendix A. Feasible flows with a τ -updated controller.
+Lemma A.1. All flows which satisfy Property 2 given a controller u updated at
+every model time step will also satisfy Property 2 with a τ -updated controller for
+some τ .
+Proof of Lemma A.1. Given the set admissible phases U , define:
+• U is the set of control sequences with distinct elements
+{S(1), S(2) . . . S(t) . . . |S(·) ∈ U },
+• Uτ is the set of τ -updated control sequences
+{S(1), S(1), . . . , S(τ + 1), S(τ + 1), . . . , S(nτ + 1), S(nτ + 1), . . . |S(·) ∈ U },
+Also define the following sets of long-term control proportion matrices, which are
+similar to the formulation in (7):
+MU =
+
+n
+
+M Uτ =
+
+T
+
+o
+1X
+S(t) {S(1), S(2), . . . , S(t), . . .} ∈ U
+lim inf
+T T
+t=1
+n
+
+T
+
+lim inf
+T
+
+1X
+S(t) · {S(1), S(1), . . . , S(τ + 1),
+T t=1
+S(τ + 1), . . .} ∈ Uτ
+
+o
+
+CYCLE-BASED MAX PRESSURE FOR TRAFFIC NETWORKS
+
+259
+
+By Property 2, a demand d is only feasible if there exists a control sequence S
+such that the corresponding long-term control proportion matrix MS satisfies (8).
+Here we show MU = MUτ , and therefore any flows that are admissible given an
+unrestricted controller in U can also be accommodated using a τ -updated controller
+in Uτ .
+Obviously, MUτ ⊂ MU . To show equality, we must also demonstrate that MU ⊂
+MUτ . Suppose there exists a control sequence Ŝ = {S(1), S(2), . . .} ∈ U. By
+definition,
+MŜ = lim inf
+T
+
+T
+τT
+1X
+1 X 0
+S(t) = lim inf
+S (t)
+T τT
+T t=1
+t=1
+
+where S 0 = {S(1), S(1), . . . , S(t), S(t), . . .}
+T
+
+1X 0
+S (t) ∈ MUτ
+= lim inf
+T T
+t=1
+
+=⇒ MU ⊂ MUτ
+
+Acknowledgments. The authors would like to thank Pravin Varaiya for his insights on this work, as well as Brian Peterson and Joe Butler for their support in
+the numerical implementation.
+REFERENCES
+[1] K. Aboudolas, M. Papageorgiou and E. Kosmatopoulos, Store-and-forward based methods for
+the signal control problem in large-scale congested urban networks, Transportation Research
+Part C: Emerging Technologies, 17 (2009), 163–174.
+[2] R. E. Allsop, Estimating the traffic capacity of a signalized road junction, Transportation
+Research, 6 (1972), 245–255.
+[3] M. Andrews, K. Kumaran, K. Ramanan, A. Stolyar, R. Vijayakumar and P. Whiting, Scheduling in a queuing system with asynchronously varying service rates, Probability in the Engineering and Informational Sciences, 18 (2004), 191–217.
+[4] R. Brockett, Stabilization of motor networks, in Proceedings of the 34th IEEE Conference on
+Decision and Control, 1995, 1484–1488.
+[5] J. G. Dai and W. Q. Lin, Maximum pressure policies in stochastic processing networks,
+Operations Research, 53 (2005), 197–218.
+[6] E. J. Davison and U. Ozguner, Decentralized control of traffic networks, IEEE Transactions
+on Systems, Man, and Cybernetics, 13 (1983), 476–487.
+[7] M. Egerstedt and Y. Wardi, Multi-process control using queuing theory, in Proceedings of the
+41st IEEE Conference on Decision and Control, 2002, 1991–1996.
+[8] P. Giaccone, E. Leonardi and D. Shah, On the maximal throughput of networks with finite
+buffers and its application to buffered crossbars, in Proceedings of the 24th Annual Joint
+Conference of the IEEE Computer and Communications Societies, 2005, 971–980.
+[9] P. B. Hunt, D. I. Robertson, R. D. Bretherton and R. I. Winton, SCOOT - a Traffic Responsive Method of Coordinating Signals, Transport and Road Research Laboratory, UK,
+1981.
+[10] H. Ishii and B. A. Francis, Stabilizing a linear system by switching control with dwell time,
+IEEE Trans. Automat. Control, 47 (2002), 1962–1973.
+[11] M. J. Neely, E. Modiano and C. E. Rohrs, Dynamic power allocation and routing for timevarying wireless networks, IEEE Journal on Selected Areas in Communications, 23 (2005),
+89–103.
+[12] M. Pajic, S. Sundaram and G. J. Pappas, Stabilizability over Deterministic Relay Networks,
+in Proceedings of the 52nd IEEE Conference on Decision and Control, 2013.
+[13] A. G. Sims and K. W. Dobinson, The Sydney coordinated adaptive traffic (SCAT) system
+philosophy and benefits, IEEE Transactions on Vehicular Technology, 29 (1980), 130–137.
+[14] A. L. Stolyar, MaxWeight scheduling in a generalized switch: State space collapse and workload minimization in heavy traffic, Annals of Applied Probability, 14 (2004), 1–53.
+
+260
+
+L. ANDERSON, T. PUMIR, D. TRIANTAFYLLOS AND A. M. BAYEN
+
+[15] L. Tassiulas, Adaptive back-pressure congestion control-based on local information, IEEE
+Transactions on Automatic Control, 40 (1995), 236–250.
+[16] L. Tassiulas and A. Ephremides, Stability properties of constrained queueing systems and
+scheduling policies for maximum throughput in multihop radio networks, IEEE Transactions
+on Automatic Control, 37 (1992), 1936–1948.
+[17] M. van den Berg, A. Hegyi, B. De Schutter and H. Hellendoorn, A macroscopic traffic flow
+model for integrated control of freeway and urban traffic networks, in Proceedings of the 42nd
+IEEE Conference on Decision and Control, 2003, 2774–2779.
+[18] P. Varaiya, Max pressure control of a network of signalized intersections, Transportation
+Research Part C: Emerging Technologies, 36 (2013), 177–195.
+[19] T. Wongpiromsarn, T. Uthaicharoenpong, Y. Wang, E. Frazzoli and D. Wang, Distributed
+traffic signal control for maximum network throughput, in Proceedings of the 15th International IEEE Conference on Intelligent Transportation Systems, 2012, 588–595.
+[20] H. M. Zhang, Y. M. Nie and Z. S. Qian, Modelling network flow with and without link interactions: The cases of point queue, spatial queue and cell transmission model, Transportmetrica
+B: Transport Dynamics, 1 (2013), 33–51.
+
+Received May 2016; revised February 2018.
+E-mail address: leah.anderson@berkeley.edu
+E-mail address: tpumir@princeton.edu
+E-mail address: dimitris.triantafyllos@gmail.com
+E-mail address: bayen@berkeley.edu
+
+
