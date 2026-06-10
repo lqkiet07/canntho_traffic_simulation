@@ -116,8 +116,10 @@ species intersection skills: [intersection_skill] {
 				if (best_rd != nil) {
 					if (lg.osm_id = "2" or lg.osm_id = "4") {
 						if (!(ways1 contains best_rd)) { ways1 <- ways1 + [best_rd]; }
+						lg.axis <- "axis_2"; // Ensure correct axis mapping for control
 					} else if (lg.osm_id = "1" or lg.osm_id = "3") {
 						if (!(ways2 contains best_rd)) { ways2 <- ways2 + [best_rd]; }
+						lg.axis <- "axis_1"; // Ensure correct axis mapping for control
 					}
 				}
 			}
@@ -161,7 +163,12 @@ species intersection skills: [intersection_skill] {
 		is_green <- true;
 		// switch lights axis_1 to green and axis_2 to red
 		ask traffic_light_visual where (each.my_parent = self) {
-			state <- (axis = "axis_1") ? "green" : "red";
+			if (my_parent.name = "intersection35") {
+				// Map Phase 1 (g1) to lights 2 and 4 (diagonal axis)
+				state <- (osm_id = "2" or osm_id = "4") ? "green" : "red";
+			} else {
+				state <- (axis = "axis_1") ? "green" : "red";
+			}
 		}
 	}
 
@@ -171,7 +178,12 @@ species intersection skills: [intersection_skill] {
 		is_green <- false;
 		// switch lights axis_2 to green and axis_1 to red
 		ask traffic_light_visual where (each.my_parent = self) {
-			state <- (axis = "axis_2") ? "green" : "red";
+			if (my_parent.name = "intersection35") {
+				// Map Phase 2 (g2) to lights 1 and 3 (vertical axis)
+				state <- (osm_id = "1" or osm_id = "3") ? "green" : "red";
+			} else {
+				state <- (axis = "axis_2") ? "green" : "red";
+			}
 		}
 	}
 
@@ -383,21 +395,60 @@ species intersection skills: [intersection_skill] {
 					if (sl != nil) { behind <- (v distance_to self) > (sl distance_to self); }
 
 					if (behind) {
-						// Classify by direction toward intersection center
-						float ang <- float(v.location towards self.location);
-						if      (ang >= 315 or ang <  45)  { cnt_W <- cnt_W + 1; }
-						else if (ang >= 45  and ang < 135)  { cnt_N <- cnt_N + 1; }
-						else if (ang >= 135 and ang < 225)  { cnt_E <- cnt_E + 1; }
-						else                                { cnt_S <- cnt_S + 1; }
+						if (name = "intersection35") {
+							// Special logic for intersection35 using closest stop light's osm_id
+							traffic_light_visual closest_lg <- my_lights closest_to v;
+							if (closest_lg != nil) {
+								if (closest_lg.osm_id = "2") {
+									cnt_N <- cnt_N + 1; // North incoming
+								} else if (closest_lg.osm_id = "4") {
+									cnt_S <- cnt_S + 1; // South incoming
+								} else if (closest_lg.osm_id = "1") {
+									cnt_W <- cnt_W + 1; // West incoming
+								} else if (closest_lg.osm_id = "3") {
+									cnt_E <- cnt_E + 1; // East incoming
+								}
+							}
+						} else {
+							// Default compass logic for other intersections
+							float ang <- float(v.location towards self.location);
+							if      (ang >= 315 or ang <  45)  { cnt_W <- cnt_W + 1; }
+							else if (ang >= 45  and ang < 135)  { cnt_N <- cnt_N + 1; }
+							else if (ang >= 135 and ang < 225)  { cnt_E <- cnt_E + 1; }
+							else                                { cnt_S <- cnt_S + 1; }
+						}
 					}
 				}
 				if (outgoing) {
-					// Classify outgoing vehicles (downstream side)
-					float ang <- float(self.location towards v.location);
-					if      (ang >= 315 or ang <  45)  { out_E <- out_E + 1; }
-					else if (ang >= 45  and ang < 135)  { out_S <- out_S + 1; }
-					else if (ang >= 135 and ang < 225)  { out_W <- out_W + 1; }
-					else                                { out_N <- out_N + 1; }
+					if (name = "intersection35") {
+						// Special logic for outgoing vehicles at intersection35 based on closest exit direction light
+						// Compute opposite direction angle to find corresponding exit lane light
+						float ang_from_center <- float(self.location towards v.location);
+						traffic_light_visual closest_lg <- nil;
+						if (!empty(my_lights)) {
+							closest_lg <- my_lights with_min_of (
+								abs(((float(self.location towards each.location) - ((ang_from_center + 180.0) mod 360.0)) + 360.0) mod 360.0)
+							);
+						}
+						if (closest_lg != nil) {
+							if (closest_lg.osm_id = "2") {
+								out_S <- out_S + 1; // Exit towards South (opposite of North input)
+							} else if (closest_lg.osm_id = "4") {
+								out_N <- out_N + 1; // Exit towards North (opposite of South input)
+							} else if (closest_lg.osm_id = "1") {
+								out_E <- out_E + 1; // Exit towards East (opposite of West input)
+							} else if (closest_lg.osm_id = "3") {
+								out_W <- out_W + 1; // Exit towards West (opposite of East input)
+							}
+						}
+					} else {
+						// Default compass logic for other intersections
+						float ang <- float(self.location towards v.location);
+						if      (ang >= 315 or ang <  45)  { out_E <- out_E + 1; }
+						else if (ang >= 45  and ang < 135)  { out_S <- out_S + 1; }
+						else if (ang >= 135 and ang < 225)  { out_W <- out_W + 1; }
+						else                                { out_N <- out_N + 1; }
+					}
 				}
 			}
 		}
@@ -412,6 +463,10 @@ species intersection skills: [intersection_skill] {
 		w_S_paper <- max(0.0, float(x_S) - (rs * x_out_N + rl * x_out_W + rr * x_out_E));
 		w_E_paper <- max(0.0, float(x_E) - (rs * x_out_W + rl * x_out_S + rr * x_out_N));
 		w_W_paper <- max(0.0, float(x_W) - (rs * x_out_E + rl * x_out_N + rr * x_out_S));
+
+		if ((name = "intersection40") and cycle mod 10 = 0) {
+			write "[Debug " + name + "] x_N=" + x_N + ", x_S=" + x_S + ", x_E=" + x_E + ", x_W=" + x_W + " | w_N=" + round(w_N_paper*10)/10.0 + ", w_S=" + round(w_S_paper*10)/10.0 + ", w_E=" + round(w_E_paper*10)/10.0 + ", w_W=" + round(w_W_paper*10)/10.0;
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -420,7 +475,7 @@ species intersection skills: [intersection_skill] {
 	aspect default {
 		if (is_traffic_signal) {
 			// Hiển thị tên các ngã tư có đèn giao thông trực tiếp lên map 3D
-			//draw name at: {location.x, location.y, 10} color: #yellow font: font("Arial", 18, #bold);
+//			draw name at: {location.x, location.y, 10} color: #yellow font: font("Arial", 18, #bold);
 			
 //			rgb light_color <- is_green ? #green : #red;
 //			draw cylinder(0.3, 5) at: location color: #black;
@@ -548,7 +603,7 @@ species traffic_controller {
 		// Kiem tra: g1+g2 phai xap xi cycle_duration - lost_time = 116s
 		// Kiem tra: g1 va g2 phai >= min_green = 10s
 		// Kiem tra: neu gamma1 > gamma2 thi g1 > g2 (pha dong xe duoc xanh nhieu hon)
-		intersection target_node <- my_nodes first_with (each.name = "intersection35");
+		intersection target_node <- my_nodes first_with (each.name = "intersection33");
 		if (target_node != nil) {
 			float g_total <- round((g1 + g2) * 10) / 10.0;
 			write "=== [CBMP] Cycle " + cycle + " | controller cho " + target_node.name + " ===";
@@ -613,7 +668,7 @@ species traffic_controller {
 		g2 <- lam2 * cycle_duration;
 
 		// Debug log — fires every phase transition (same style as CBMP v1)
-		intersection target_node <- my_nodes first_with (each.name = "intersection35");
+		intersection target_node <- my_nodes first_with (each.name = "intersection40");
 		if (target_node != nil){
 			float g_total <- round((g1 + g2) * 10) / 10.0;
 			write "=== [PAPER-v2] Cycle " + cycle + " | " + target_node.name + " ===";

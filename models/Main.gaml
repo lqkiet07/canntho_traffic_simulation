@@ -31,8 +31,8 @@ global {
 	
 	//obj for controller mode
 	// false/false = Fixed-time | true/false = CBMP v1 (phi) | false/true = CBMP v2 (Paper)
-	bool use_cbmp <- true;
-	bool use_paper_cbmp <- false;  // Paper-faithful: formula (10)(11)(16), vehicle count + c_{l,m}
+	bool use_cbmp <- false;
+	bool use_paper_cbmp <- true;  // Paper-faithful: formula (10)(11)(16), vehicle count + c_{l,m}
 	
 	//obj for KPIs (Đo lường hiệu năng)
 	string csv_filename;
