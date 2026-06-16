@@ -31,6 +31,7 @@ species intersection skills: [intersection_skill] {
 	bool is_green;
 	bool is_traffic_signal;
 	int throughput_count <- 0;
+	float total_delay_in_cycle <- 0.0;
 	rgb color_fire;
 	int start_phase <- 1;
 	
@@ -84,6 +85,19 @@ species intersection skills: [intersection_skill] {
 	float w_S_paper <- 0.0;
 	float w_E_paper <- 0.0;
 	float w_W_paper <- 0.0;
+
+	// -------------------------------------------------------------------------
+	// 3c. Relative Compass static axes (for adaptive directional counting)
+	// -------------------------------------------------------------------------
+	float ang_in_N <- -1.0;
+	float ang_in_S <- -1.0;
+	float ang_in_E <- -1.0;
+	float ang_in_W <- -1.0;
+	
+	float ang_out_N <- -1.0;
+	float ang_out_S <- -1.0;
+	float ang_out_E <- -1.0;
+	float ang_out_W <- -1.0;
 
 	// -------------------------------------------------------------------------
 	// 4. Khối Hành động (Actions)
@@ -155,6 +169,100 @@ species intersection skills: [intersection_skill] {
 				}
 			}
 		}
+
+		// Adaptive Relative Compass axes calculation
+		list<road> my_roads <- (roads_in collect road(each)) + (roads_out collect road(each));
+		my_roads <- remove_duplicates(my_roads);
+		
+		map<road, float> road_angles;
+		loop rd over: my_roads {
+			if (rd != nil and !empty(rd.shape.points)) {
+				point pt_start <- rd.shape.points[0];
+				point pt_end <- rd.shape.points[length(rd.shape.points) - 1];
+				// Select far_pt based on maximum distance to intersection center
+				point far_pt <- (pt_start distance_to self.location > pt_end distance_to self.location) ? pt_start : pt_end;
+				float ang_in <- float(far_pt towards self.location);
+				road_angles[rd] <- ang_in;
+			}
+		}
+		
+		list<road> remaining_roads <- keys(road_angles);
+		
+		// 1. Assign to West axis (closest to 0.0 or 360.0)
+		road best_W <- nil;
+		float min_diff_W <- 360.0;
+		loop rd over: remaining_roads {
+			float ang <- road_angles[rd];
+			float diff <- min(abs(ang - 0.0), abs(ang - 360.0));
+			if (diff < min_diff_W) {
+				min_diff_W <- diff;
+				best_W <- rd;
+			}
+		}
+		if (best_W != nil) {
+			ang_in_W <- road_angles[best_W];
+			point pt_start <- best_W.shape.points[0];
+			point pt_end <- best_W.shape.points[length(best_W.shape.points) - 1];
+			point far_pt <- (pt_start distance_to self.location > pt_end distance_to self.location) ? pt_start : pt_end;
+			ang_out_W <- float(self.location towards far_pt);
+			remaining_roads <- remaining_roads - best_W;
+		}
+		
+		// 2. Assign to North axis (closest to 90.0)
+		road best_N <- nil;
+		float min_diff_N <- 360.0;
+		loop rd over: remaining_roads {
+			float ang <- road_angles[rd];
+			float diff <- abs(ang - 90.0);
+			if (diff < min_diff_N) {
+				min_diff_N <- diff;
+				best_N <- rd;
+			}
+		}
+		if (best_N != nil) {
+			ang_in_N <- road_angles[best_N];
+			point pt_start <- best_N.shape.points[0];
+			point pt_end <- best_N.shape.points[length(best_N.shape.points) - 1];
+			point far_pt <- (pt_start distance_to self.location > pt_end distance_to self.location) ? pt_start : pt_end;
+			ang_out_N <- float(self.location towards far_pt);
+			remaining_roads <- remaining_roads - best_N;
+		}
+		
+		// 3. Assign to East axis (closest to 180.0)
+		road best_E <- nil;
+		float min_diff_E <- 360.0;
+		loop rd over: remaining_roads {
+			float ang <- road_angles[rd];
+			float diff <- abs(ang - 180.0);
+			if (diff < min_diff_E) {
+				min_diff_E <- diff;
+				best_E <- rd;
+			}
+		}
+		if (best_E != nil) {
+			ang_in_E <- road_angles[best_E];
+			point pt_start <- best_E.shape.points[0];
+			point pt_end <- best_E.shape.points[length(best_E.shape.points) - 1];
+			point far_pt <- (pt_start distance_to self.location > pt_end distance_to self.location) ? pt_start : pt_end;
+			ang_out_E <- float(self.location towards far_pt);
+			remaining_roads <- remaining_roads - best_E;
+		}
+		
+		// 4. Assign remaining to South axis (closest to 270.0)
+		if (!empty(remaining_roads)) {
+			road best_S <- remaining_roads[0];
+			ang_in_S <- road_angles[best_S];
+			point pt_start <- best_S.shape.points[0];
+			point pt_end <- best_S.shape.points[length(best_S.shape.points) - 1];
+			point far_pt <- (pt_start distance_to self.location > pt_end distance_to self.location) ? pt_start : pt_end;
+			ang_out_S <- float(self.location towards far_pt);
+		}
+		
+//		if (name = "intersection33" or name = "intersection35") {
+//			write "=== Relative Compass Init for " + name + " ===";
+//			write "  ang_in  | N:" + ang_in_N + " S:" + ang_in_S + " E:" + ang_in_E + " W:" + ang_in_W;
+//			write "  ang_out | N:" + ang_out_N + " S:" + ang_out_S + " E:" + ang_out_E + " W:" + ang_out_W;
+//		}
 	}
 
 	action to_green {
@@ -195,7 +303,7 @@ species intersection skills: [intersection_skill] {
 		loop rd over: ways1 + ways2 { queue_per_road[rd] <- 0; }
 		
 		list<vehicle> all_vehicles <- (motobike as list) + (car as list) + (truck as list);
-		list<vehicle> near_vehicles <- all_vehicles where (each distance_to self < 200.0);
+		list<vehicle> near_vehicles <- all_vehicles where (each distance_to self < 200.0);// detect vehicles
 		
 		//obj for stop line boundary - lay danh sach cot den cua chinh ngo tu nay de xac dinh ranh gioi
 		// Moi cot den la stop line cua mot nhanh duong di vao tuong ung
@@ -275,20 +383,58 @@ species intersection skills: [intersection_skill] {
 							bool is_slow <- (v.speed < 5 #km/#h or v.real_speed < 5 #km/#h);
 							if (is_slow) { debug_is_slow <- debug_is_slow + 1; }
 							
-							if (ang_to_center >= 315 or ang_to_center < 45) {
+							// Determine direction using Relative Compass
+							string direction <- "";
+							float min_diff <- 360.0;
+							
+							if (ang_in_W >= 0.0) {
+								float d <- abs(ang_to_center - ang_in_W) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "W"; }
+							}
+							if (ang_in_N >= 0.0) {
+								float d <- abs(ang_to_center - ang_in_N) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "N"; }
+							}
+							if (ang_in_E >= 0.0) {
+								float d <- abs(ang_to_center - ang_in_E) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "E"; }
+							}
+							if (ang_in_S >= 0.0) {
+								float d <- abs(ang_to_center - ang_in_S) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "S"; }
+							}
+							
+							// Fallback to absolute compass if no valid relative direction is set
+							if (direction = "") {
+								if (ang_to_center >= 315 or ang_to_center < 45) {
+									direction <- "W";
+								} else if (ang_to_center >= 45 and ang_to_center < 135) {
+									direction <- "N";
+								} else if (ang_to_center >= 135 and ang_to_center < 225) {
+									direction <- "E";
+								} else {
+									direction <- "S";
+								}
+							}
+							
+							if (direction = "W") {
 								count_w2 <- count_w2 + 1;
 								area_W <- area_W + effective_area;
 								if (is_slow) { c_W <- c_W + 1; queue_c_W <- queue_c_W + 1; }
-							} else if (ang_to_center >= 45 and ang_to_center < 135) {
+							} else if (direction = "N") {
 								count_w1 <- count_w1 + 1;
 								area_N <- area_N + effective_area;
 								if (is_slow) { c_N <- c_N + 1; queue_c_N <- queue_c_N + 1; }
-							} else if (ang_to_center >= 135 and ang_to_center < 225) {
+							} else if (direction = "E") {
 								count_w2 <- count_w2 + 1;
 								area_E <- area_E + effective_area;
 								zone_E <- detect_length * current_rd.width;
 								if (is_slow) { c_E <- c_E + 1; queue_c_E <- queue_c_E + 1; }
-							} else {
+							} else if (direction = "S") {
 								count_w1 <- count_w1 + 1;
 								area_S <- area_S + effective_area;
 								if (is_slow) { c_S <- c_S + 1; queue_c_S <- queue_c_S + 1; }
@@ -297,15 +443,53 @@ species intersection skills: [intersection_skill] {
 					}
 					
 					if (is_outgoing) {
-						// Xe dang roi khoi nga tu (ha luu)
+						// Vehicle leaving the intersection (downstream)
 						float ang_from_center <- float(self.location towards v.location);
-						if (ang_from_center >= 315 or ang_from_center < 45) {
+						
+						string direction_out <- "";
+						float min_diff_out <- 360.0;
+						
+						if (ang_out_E >= 0.0) {
+							float d <- abs(ang_from_center - ang_out_E) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "E"; }
+						}
+						if (ang_out_S >= 0.0) {
+							float d <- abs(ang_from_center - ang_out_S) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "S"; }
+						}
+						if (ang_out_W >= 0.0) {
+							float d <- abs(ang_from_center - ang_out_W) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "W"; }
+						}
+						if (ang_out_N >= 0.0) {
+							float d <- abs(ang_from_center - ang_out_N) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "N"; }
+						}
+						
+						// Fallback to absolute compass for outgoing
+						if (direction_out = "") {
+							if (ang_from_center >= 315 or ang_from_center < 45) {
+								direction_out <- "E";
+							} else if (ang_from_center >= 45 and ang_from_center < 135) {
+								direction_out <- "S";
+							} else if (ang_from_center >= 135 and ang_from_center < 225) {
+								direction_out <- "W";
+							} else {
+								direction_out <- "N";
+							}
+						}
+						
+						if (direction_out = "E") {
 							area_out_E <- area_out_E + veh_area;
-						} else if (ang_from_center >= 45 and ang_from_center < 135) {
+						} else if (direction_out = "S") {
 							area_out_S <- area_out_S + veh_area;
-						} else if (ang_from_center >= 135 and ang_from_center < 225) {
+						} else if (direction_out = "W") {
 							area_out_W <- area_out_W + veh_area;
-						} else {
+						} else if (direction_out = "N") {
 							area_out_N <- area_out_N + veh_area;
 						}
 					}
@@ -410,12 +594,44 @@ species intersection skills: [intersection_skill] {
 								}
 							}
 						} else {
-							// Default compass logic for other intersections
+							// Adaptive Relative Compass logic for other intersections
 							float ang <- float(v.location towards self.location);
-							if      (ang >= 315 or ang <  45)  { cnt_W <- cnt_W + 1; }
-							else if (ang >= 45  and ang < 135)  { cnt_N <- cnt_N + 1; }
-							else if (ang >= 135 and ang < 225)  { cnt_E <- cnt_E + 1; }
-							else                                { cnt_S <- cnt_S + 1; }
+							string direction <- "";
+							float min_diff <- 360.0;
+							
+							if (ang_in_W >= 0.0) {
+								float d <- abs(ang - ang_in_W) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "W"; }
+							}
+							if (ang_in_N >= 0.0) {
+								float d <- abs(ang - ang_in_N) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "N"; }
+							}
+							if (ang_in_E >= 0.0) {
+								float d <- abs(ang - ang_in_E) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "E"; }
+							}
+							if (ang_in_S >= 0.0) {
+								float d <- abs(ang - ang_in_S) mod 360.0;
+								if (d > 180.0) { d <- 360.0 - d; }
+								if (d < min_diff) { min_diff <- d; direction <- "S"; }
+							}
+							
+							// Fallback to absolute compass
+							if (direction = "") {
+								if      (ang >= 315 or ang <  45)  { direction <- "W"; }
+								else if (ang >= 45  and ang < 135)  { direction <- "N"; }
+								else if (ang >= 135 and ang < 225)  { direction <- "E"; }
+								else                                { direction <- "S"; }
+							}
+							
+							if      (direction = "W") { cnt_W <- cnt_W + 1; }
+							else if (direction = "N") { cnt_N <- cnt_N + 1; }
+							else if (direction = "E") { cnt_E <- cnt_E + 1; }
+							else if (direction = "S") { cnt_S <- cnt_S + 1; }
 						}
 					}
 				}
@@ -442,12 +658,44 @@ species intersection skills: [intersection_skill] {
 							}
 						}
 					} else {
-						// Default compass logic for other intersections
+						// Adaptive Relative Compass logic for outgoing vehicles
 						float ang <- float(self.location towards v.location);
-						if      (ang >= 315 or ang <  45)  { out_E <- out_E + 1; }
-						else if (ang >= 45  and ang < 135)  { out_S <- out_S + 1; }
-						else if (ang >= 135 and ang < 225)  { out_W <- out_W + 1; }
-						else                                { out_N <- out_N + 1; }
+						string direction_out <- "";
+						float min_diff_out <- 360.0;
+						
+						if (ang_out_E >= 0.0) {
+							float d <- abs(ang - ang_out_E) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "E"; }
+						}
+						if (ang_out_S >= 0.0) {
+							float d <- abs(ang - ang_out_S) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "S"; }
+						}
+						if (ang_out_W >= 0.0) {
+							float d <- abs(ang - ang_out_W) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "W"; }
+						}
+						if (ang_out_N >= 0.0) {
+							float d <- abs(ang - ang_out_N) mod 360.0;
+							if (d > 180.0) { d <- 360.0 - d; }
+							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "N"; }
+						}
+						
+						// Fallback to absolute compass for outgoing
+						if (direction_out = "") {
+							if      (ang >= 315 or ang <  45)  { direction_out <- "E"; }
+							else if (ang >= 45  and ang < 135)  { direction_out <- "S"; }
+							else if (ang >= 135 and ang < 225)  { direction_out <- "W"; }
+							else                                { direction_out <- "N"; }
+						}
+						
+						if      (direction_out = "E") { out_E <- out_E + 1; }
+						else if (direction_out = "S") { out_S <- out_S + 1; }
+						else if (direction_out = "W") { out_W <- out_W + 1; }
+						else if (direction_out = "N") { out_N <- out_N + 1; }
 					}
 				}
 			}
@@ -464,7 +712,7 @@ species intersection skills: [intersection_skill] {
 		w_E_paper <- max(0.0, float(x_E) - (rs * x_out_W + rl * x_out_S + rr * x_out_N));
 		w_W_paper <- max(0.0, float(x_W) - (rs * x_out_E + rl * x_out_N + rr * x_out_S));
 
-		if ((name = "intersection40") and cycle mod 10 = 0) {
+		if ((name = "intersection35") and cycle mod 10 = 0) {
 			write "[Debug " + name + "] x_N=" + x_N + ", x_S=" + x_S + ", x_E=" + x_E + ", x_W=" + x_W + " | w_N=" + round(w_N_paper*10)/10.0 + ", w_S=" + round(w_S_paper*10)/10.0 + ", w_E=" + round(w_E_paper*10)/10.0 + ", w_W=" + round(w_W_paper*10)/10.0;
 		}
 	}
@@ -534,14 +782,19 @@ species traffic_controller {
 	action log_kpi {
 		completed_cycles <- completed_cycles + 1;
 		
+		// Calculate average delay for all vehicles that passed the intersection during this cycle
+		float total_delay_sum <- sum(my_nodes collect each.total_delay_in_cycle);
+		float avg_delay <- my_throughput > 0 ? (total_delay_sum / my_throughput) : 0.0;
+		
 		// Luu ra file CSV
 		string node_name <- (!empty(my_nodes)) ? my_nodes[0].name : "unknown";
-		string row <- node_name + "," + completed_cycles + "," + round(time) + "," + my_queue + "," + my_throughput;
+		string row <- node_name + "," + completed_cycles + "," + round(time) + "," + my_queue + "," + my_throughput + "," + (round(avg_delay * 100) / 100.0);
 		save row to: csv_filename format: "csv" rewrite: false;
 		
-		// Reset throughput cho chu ky tiep theo
+		// Reset throughput and delay for next cycle
 		loop node over: my_nodes {
 			node.throughput_count <- 0; 
+			node.total_delay_in_cycle <- 0.0;
 		}
 		my_throughput <- 0;
 	}
@@ -668,7 +921,7 @@ species traffic_controller {
 		g2 <- lam2 * cycle_duration;
 
 		// Debug log — fires every phase transition (same style as CBMP v1)
-		intersection target_node <- my_nodes first_with (each.name = "intersection40");
+		intersection target_node <- my_nodes first_with (each.name = "intersection35");
 		if (target_node != nil){
 			float g_total <- round((g1 + g2) * 10) / 10.0;
 			write "=== [PAPER-v2] Cycle " + cycle + " | " + target_node.name + " ===";
@@ -719,7 +972,6 @@ species traffic_controller {
 					cbmp_counter <- 0.0;
 					ask my_nodes { do to_red; }
 					is_green <- false;
-					do compute_green_time_paper;  // recalculate for next cycle
 				}
 			} else {
 				if (cbmp_counter >= g2) {

@@ -26,8 +26,11 @@ global {
 	int target_car <- 300;
 	int target_truck <- 50;
 	int target_ambulance <- 5;
-	string routing_scenario <- "Đổ dồn về phía Đông";
 	float spawn_rate <- 1.0;
+	
+	// Traffic demand scenario from paper
+	string traffic_demand <- "Medium (900 vph)" among: ["Low (400 vph)", "Medium (900 vph)", "High (1400 vph)"];
+	float spawn_timer <- 0.0;
 	
 	//obj for controller mode
 	// false/false = Fixed-time | true/false = CBMP v1 (phi) | false/true = CBMP v2 (Paper)
@@ -186,10 +189,15 @@ create roi_lane from: roi_lane_shp with: [
 		int nb_truck <- 0;
 		write "done";
 
-		// CSV filename reflects active algorithm mode
+		// CSV filename reflects active algorithm mode and traffic demand
+		string demand_str <- "Custom";
+		if (traffic_demand = "Low (400 vph)") { demand_str <- "Low_400"; }
+		else if (traffic_demand = "Medium (900 vph)") { demand_str <- "Medium_900"; }
+		else if (traffic_demand = "High (1400 vph)") { demand_str <- "High_1400"; }
+		
 		string mode_str <- use_paper_cbmp ? "CBMP_Paper" : (use_cbmp ? "CBMP_v1" : "FixedTime");
-		csv_filename <- "KPI_Result_" + mode_str + ".csv";
-		save "Intersection_Name,Cycle,Time_Seconds,Queue_Length,Throughput_per_Cycle" to: csv_filename format: "csv" rewrite: true;
+		csv_filename <- "KPI_Result_" + mode_str + "_" + demand_str + ".csv";
+		save "Intersection_Name,Cycle,Time_Seconds,Queue_Length,Throughput_per_Cycle,Average_Delay" to: csv_filename format: "csv" rewrite: true;
 		
 
 		
@@ -211,73 +219,76 @@ create roi_lane from: roi_lane_shp with: [
 	}
 
 	reflex maintain_population {
-		// Kiểm tra sự thiếu hụt cho từng loại xe riêng biệt
-		int diff_moto <- target_motobike - length(motobike);
-		int diff_car <- target_car - length(car);
-		int diff_truck <- target_truck - length(truck);
-
-		// Tổng số xe cần sinh ra
-		int total_diff <- max(0, diff_moto) + max(0, diff_car) + max(0, diff_truck);
-
-		if (total_diff > 0) {
-			int spawn_count <- min(total_diff, 3); // spawn up to 3 vehicles per step
-
-			loop times: spawn_count {
-				intersection end_node <- nil;
-				float cx <- shape.location.x;
-				float cy <- shape.location.y;
-				switch routing_scenario {
-					match "Trục dọc kẹt cứng" {
-						list<intersection> ns <- spawn_nodes where (each.location.y < cy - 100 or each.location.y > cy + 100);
-						list<intersection> ew <- spawn_nodes where (each.location.x < cx - 100 or each.location.x > cx + 100);
-						if (flip(0.8) and !empty(ns)) {
-							end_node <- one_of(ns);
-						} else if (!empty(ew)) {
-							end_node <- one_of(ew);
+		if (traffic_demand != "Custom") {
+			// --- POISSON-BASED FREE SPAWNING SCENARIOS ---
+			spawn_timer <- spawn_timer + step;
+			
+			float spawn_interval <- 4.0; // Medium (900 vph) default
+			if (traffic_demand = "Low (400 vph)") { spawn_interval <- 9.0; }
+			else if (traffic_demand = "High (1400 vph)") { spawn_interval <- 2.57; }
+			
+			if (spawn_timer >= spawn_interval) {
+				spawn_timer <- spawn_timer - spawn_interval;
+				
+				intersection start_node <- one_of(spawn_nodes);
+				intersection end_node <- one_of(spawn_nodes);
+				
+				if (start_node != nil and end_node != nil and start_node != end_node) {
+					// Safe spawning check: less than 2 vehicles within 8m of start point
+					if (length(vehicle overlapping circle(8.0, start_node.location)) < 2) {
+						// Vehicle composition: 85% motobike, 12% car, 3% truck
+						float rnd_val <- rnd(1.0);
+						if (rnd_val < 0.85) {
+							create motobike number: 1 { location <- start_node.location; final_target <- end_node; }
+						} else if (rnd_val < 0.97) {
+							create car number: 1 { location <- start_node.location; final_target <- end_node; }
 						} else {
-							end_node <- one_of(spawn_nodes);
+							create truck number: 1 { location <- start_node.location; final_target <- end_node; }
 						}
 					}
-					match "Đổ dồn về phía Đông" {
-						list<intersection> east <- spawn_nodes where (each.location.x > cx + 100);
-						end_node <- !empty(east) ? one_of(east) : one_of(spawn_nodes);
-					}
-					match "Bình thường" {
-						end_node <- one_of(spawn_nodes);
-					}
 				}
-
-				if (end_node != nil) {
-					intersection start_node <- one_of(spawn_nodes);
-					if (start_node != nil and start_node != end_node) {
-						// allow spawn if less than 2 vehicles within 8m
-						if (length(vehicle overlapping circle(8.0, start_node.location)) < 2) {
-							// Tính toán ngẫu nhiên có trọng số để ưu tiên sinh ra loại xe đang thiếu
-							int rand_val <- rnd(total_diff - 1);
-							if (rand_val < max(0, diff_moto)) {
-								create motobike number: 1 { location <- start_node.location; final_target <- end_node; }
-							} else if (rand_val < max(0, diff_moto) + max(0, diff_car)) {
-								create car number: 1 { location <- start_node.location; final_target <- end_node; }
-							} else if (rand_val < max(0, diff_moto) + max(0, diff_car) + max(0, diff_truck)) {
-								create truck number: 1 { location <- start_node.location; final_target <- end_node; }
+			}
+		} else {
+			// --- ORIGINAL POPULATION MAINTENANCE SCENARIOS ---
+			int diff_moto <- target_motobike - length(motobike);
+			int diff_car <- target_car - length(car);
+			int diff_truck <- target_truck - length(truck);
+			int total_diff <- max(0, diff_moto) + max(0, diff_car) + max(0, diff_truck);
+	
+			if (total_diff > 0) {
+				int spawn_count <- min(total_diff, 3);
+				loop times: spawn_count {
+					intersection end_node <- one_of(spawn_nodes);
+					if (end_node != nil) {
+						intersection start_node <- one_of(spawn_nodes);
+						if (start_node != nil and start_node != end_node) {
+							if (length(vehicle overlapping circle(8.0, start_node.location)) < 2) {
+								int rand_val <- rnd(total_diff - 1);
+								if (rand_val < max(0, diff_moto)) {
+									create motobike number: 1 { location <- start_node.location; final_target <- end_node; }
+								} else if (rand_val < max(0, diff_moto) + max(0, diff_car)) {
+									create car number: 1 { location <- start_node.location; final_target <- end_node; }
+								} else if (rand_val < max(0, diff_moto) + max(0, diff_car) + max(0, diff_truck)) {
+									create truck number: 1 { location <- start_node.location; final_target <- end_node; }
+								}
 							}
 						}
 					}
 				}
 			}
+			// Clean redundant population if custom limit decreases
+			if (diff_moto < 0) { ask abs(diff_moto) among (motobike as list) { do die; } }
+			if (diff_car < 0) { ask abs(diff_car) among (car as list) { do die; } }
+			if (diff_truck < 0) { ask abs(diff_truck) among (truck as list) { do die; } }
 		}
-		
-		// Xóa bớt xe dư thừa ngẫu nhiên đối với từng loại riêng biệt nếu dân số vượt mốc
-		if (diff_moto < 0) { ask abs(diff_moto) among (motobike as list) { do die; } }
-		if (diff_car < 0) { ask abs(diff_car) among (car as list) { do die; } }
-		if (diff_truck < 0) { ask abs(diff_truck) among (truck as list) { do die; } }
 	}}
 
 
 experiment test type: gui {
-	parameter "Lưu lượng xe máy:" var: target_motobike min: 0 max: 3000;
-	parameter "Lưu lượng ô tô:" var: target_car min: 0 max: 2000;
-	parameter "Lưu lượng xe tải:" var: target_truck min: 0 max: 1000;
+	parameter "Kịch bản lưu lượng:" var: traffic_demand;
+//	parameter "Lưu lượng xe máy (Tùy chỉnh):" var: target_motobike min: 0 max: 3000;
+//	parameter "Lưu lượng ô tô (Tùy chỉnh):" var: target_car min: 0 max: 2000;
+//	parameter "Lưu lượng xe tải (Tùy chỉnh):" var: target_truck min: 0 max: 1000;
 	parameter "CBMP v1 (phi diện tích):" var: use_cbmp;
 	parameter "CBMP v2 Paper (đếm xe):" var: use_paper_cbmp;
 	//parameter "Kịch bản di chuyển:" var: routing_scenario among: ["Bình thường", "Trục dọc kẹt cứng", "Đổ dồn về phía Đông"];
@@ -294,7 +305,7 @@ experiment test type: gui {
 		}
 		
 		display heatmap type: 3d background: rgb(8, 12, 25) axes: false {
-			// base road layer
+			// base road layer 
 			species road aspect: heatmap_base refresh: false;
 			// overlay heat dots based on actual vehicle positions
 			species motobike aspect: heat_dot;
@@ -302,7 +313,7 @@ experiment test type: gui {
 			species truck aspect: heat_dot;
 			//species ambulance aspect: heat_dot;
 		}
-//		
+		
 //		display KPI_Charts type: java2D {
 //			chart "Lưu lượng thông hành toàn mạng (Throughput / Chu kỳ)" type: series size: {1, 0.5} position: {0, 0} {
 //				data "Số xe thoát (xe/chu kỳ)" value: sum(traffic_controller collect each.my_throughput) color: #green marker: false;
@@ -312,4 +323,9 @@ experiment test type: gui {
 //			}
 //		}
 	}
+}
+
+experiment batch_run type: batch keep_seed: true until: (cycle >= 7200) {
+	parameter "Kịch bản lưu lượng:" var: traffic_demand among: ["Low (400 vph)", "Medium (900 vph)", "High (1400 vph)"];
+	parameter "CBMP v2 Paper (đếm xe):" var: use_paper_cbmp among: [false, true];
 }

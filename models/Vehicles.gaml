@@ -17,6 +17,7 @@ species vehicle skills: [driving] {
 
 	//obj for vehicle width - chieu ngang phuong tien, duoc ghi de boi tung loai con
 	float vehicle_width <- 1.0;
+	float total_delay <- 0.0;
 
 	init {
 		right_side_driving <- true;
@@ -36,6 +37,11 @@ species vehicle skills: [driving] {
 			do die;
 		}
 		else{
+			// Accumulate stopped delay if speed is very low (< 1 km/h = 0.28 m/s)
+			if (speed < 0.28) {
+				total_delay <- total_delay + step;
+			}
+
 			if (current_path = nil) {
 				do compute_path graph: road_network target: final_target;
 				if (current_path = nil) {
@@ -51,7 +57,11 @@ species vehicle skills: [driving] {
 				if (previous_road != nil) {
 					intersection crossed_node <- intersection(road_network target_of road(previous_road));
 					if (crossed_node != nil and crossed_node.is_traffic_signal) {
-						ask crossed_node { throughput_count <- throughput_count + 1; }
+						ask crossed_node { 
+							throughput_count <- throughput_count + 1; 
+							total_delay_in_cycle <- total_delay_in_cycle + myself.total_delay;
+						}
+						total_delay <- 0.0; // reset vehicle delay after crossing
 					}
 				}
 				previous_road <- road(current_road);
