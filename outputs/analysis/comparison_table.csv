@@ -1,0 +1,10 @@
+﻿Scenario,Chỉ số,CBMP Paper (mean ± std),CBMP Area (mean ± std),Cải thiện Area vs Paper (%),p-value (Area vs Paper),Ý nghĩa (p<0.05)
+Low (400 vph),Avg Queue (xe),45.43 ± 0.86,22.88 ± 1.33,49.6,0.002,Có ✓
+Low (400 vph),Throughput (xe),5340.40 ± 38.76,7947.60 ± 118.16,48.8,0.002,Có ✓
+Low (400 vph),Avg Delay (s),19.44 ± 0.84,3.88 ± 0.30,80.0,0.002,Có ✓
+Medium (900 vph),Avg Queue (xe),115.32 ± 1.45,50.55 ± 4.35,56.2,0.002,Có ✓
+Medium (900 vph),Throughput (xe),12069.20 ± 57.42,17827.50 ± 165.17,47.7,0.002,Có ✓
+Medium (900 vph),Avg Delay (s),22.12 ± 0.47,3.86 ± 0.40,82.5,0.002,Có ✓
+High (1400 vph),Avg Queue (xe),115.05 ± 1.08,50.12 ± 4.99,56.4,0.002,Có ✓
+High (1400 vph),Throughput (xe),12041.50 ± 80.28,17915.10 ± 118.78,48.8,0.002,Có ✓
+High (1400 vph),Avg Delay (s),22.01 ± 0.44,3.82 ± 0.40,82.7,0.002,Có ✓

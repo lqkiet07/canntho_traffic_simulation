@@ -25,6 +25,17 @@ species gis_signal_point {
 // =========================================================================
 species intersection skills: [intersection_skill] {
 	
+	// --- CACHE & ACCUMULATED VARIABLES FOR CBMP AREA ---
+	list<roi_lane> my_lanes <- [];       // Cache list of lanes for this intersection
+	float accumulated_queue <- 0.0;     // Accumulated queue length over steps in cycle
+	int queue_sample_count <- 0;         // Number of queue samples in cycle
+	list<string> signal_phases <- [];                
+	map<string, float> gamma_phase_pressures <- [];  
+	map<string, float> accumulated_phase_pressures <- [];
+	int pressure_sample_count <- 0;
+	float C_saturation <- 2.5;          // Saturation flow constant                     
+	int total_node_queue <- 0;           // Waiting vehicles
+
 	// -------------------------------------------------------------------------
 	// 1. Biến trạng thái đèn & Đồ họa
 	// -------------------------------------------------------------------------
@@ -85,6 +96,13 @@ species intersection skills: [intersection_skill] {
 	float w_S_paper <- 0.0;
 	float w_E_paper <- 0.0;
 	float w_W_paper <- 0.0;
+	
+	// Accumulators for average cycle pressure (smooth feedback)
+	float w_N_sum <- 0.0;
+	float w_S_sum <- 0.0;
+	float w_E_sum <- 0.0;
+	float w_W_sum <- 0.0;
+	int paper_step_count <- 0;
 
 	// -------------------------------------------------------------------------
 	// 3c. Relative Compass static axes (for adaptive directional counting)
@@ -298,7 +316,7 @@ species intersection skills: [intersection_skill] {
 	// -------------------------------------------------------------------------
 	// 5. Khối Phản xạ (Reflexes)
 	// -------------------------------------------------------------------------
-	reflex calculate_queue when: is_traffic_signal {
+	reflex calculate_queue when: is_traffic_signal and !use_cbmp {
 		// Reset queue map
 		loop rd over: ways1 + ways2 { queue_per_road[rd] <- 0; }
 		
@@ -550,7 +568,7 @@ species intersection skills: [intersection_skill] {
 	// CBMP v2 — Paper-faithful: Anderson et al. 2018
 	// Implements formula (10): w_{l,m} = x_{l,m} - Σ r_{m,p} * x_{m,p}
 	// =========================================================================
-	reflex calculate_queue_paper when: is_traffic_signal {
+	reflex calculate_queue_paper when: is_traffic_signal and use_paper_cbmp {
 		list<vehicle> all_v <- (motobike as list) + (car as list) + (truck as list);
 		list<vehicle> near_v <- all_v where (each distance_to self < 200.0);
 		list<traffic_light_visual> my_lights <- traffic_light_visual where (each.my_parent = self);
@@ -711,10 +729,50 @@ species intersection skills: [intersection_skill] {
 		w_S_paper <- max(0.0, float(x_S) - (rs * x_out_N + rl * x_out_W + rr * x_out_E));
 		w_E_paper <- max(0.0, float(x_E) - (rs * x_out_W + rl * x_out_S + rr * x_out_N));
 		w_W_paper <- max(0.0, float(x_W) - (rs * x_out_E + rl * x_out_N + rr * x_out_S));
+		
+		// Accumulate pressure over the cycle for feedback smoothing (Method 2)
+		w_N_sum <- w_N_sum + w_N_paper;
+		w_S_sum <- w_S_sum + w_S_paper;
+		w_E_sum <- w_E_sum + w_E_paper;
+		w_W_sum <- w_W_sum + w_W_paper;
+		paper_step_count <- paper_step_count + 1;
 
-		if ((name = "intersection35") and cycle mod 10 = 0) {
-			write "[Debug " + name + "] x_N=" + x_N + ", x_S=" + x_S + ", x_E=" + x_E + ", x_W=" + x_W + " | w_N=" + round(w_N_paper*10)/10.0 + ", w_S=" + round(w_S_paper*10)/10.0 + ", w_E=" + round(w_E_paper*10)/10.0 + ", w_W=" + round(w_W_paper*10)/10.0;
+		// if ((name = "intersection35") and cycle mod 10 = 0) {
+		// 	write "[Debug " + name + "] x_N=" + x_N + ", x_S=" + x_S + ", x_E=" + x_E + ", x_W=" + x_W + " | w_N=" + round(w_N_paper*10)/10.0 + ", w_S=" + round(w_S_paper*10)/10.0 + ", w_E=" + round(w_E_paper*10)/10.0 + ", w_W=" + round(w_W_paper*10)/10.0;
+		// }
+	}
+
+	// Calculate queue length for CBMP Area (100% faithful to zone folder)
+	reflex calculate_queue_roi when: is_traffic_signal and use_cbmp {
+		int queue_count <- 0;
+		loop roi over: my_lanes {
+			list<motobike> q_moto  <- motobike overlapping roi.shape where (each.speed < each.max_speed * 0.4);
+			list<car>      q_car   <- car overlapping roi.shape where (each.speed < each.max_speed * 0.4);
+			list<truck>    q_truck <- truck overlapping roi.shape where (each.speed < each.max_speed * 0.4);
+			queue_count <- queue_count + length(q_moto) + length(q_car) + length(q_truck);
 		}
+		total_node_queue <- queue_count;
+		accumulated_queue <- accumulated_queue + queue_count;
+		queue_sample_count <- queue_sample_count + 1;
+	}
+
+	// Calculate composite phase pressures for CBMP Area (100% faithful to zone folder)
+	reflex calculate_composite_phase_pressures when: is_traffic_signal and use_cbmp {
+		loop p over: signal_phases { 
+			if !(gamma_phase_pressures contains_key p) { gamma_phase_pressures[p] <- 0.0; }
+			if !(accumulated_phase_pressures contains_key p) { accumulated_phase_pressures[p] <- 0.0; }
+		}
+
+		loop p over: signal_phases {
+			float inst_pressure <- 0.0;
+			loop lane over: my_lanes {
+				if (lane.phase_id = p) {
+					inst_pressure <- inst_pressure + (C_saturation * lane.w_max_pressure);
+				}
+			}
+			accumulated_phase_pressures[p] <- accumulated_phase_pressures[p] + inst_pressure;
+		}
+		pressure_sample_count <- pressure_sample_count + 1;
 	}
 
 	// -------------------------------------------------------------------------
@@ -771,106 +829,225 @@ species traffic_controller {
 	
 	//obj for cycle-based green time - g1/g2 chi duoc tinh 1 LAN moi chu ky
 	// (dung thiet ke CBMP: "Cycle-Based" = phan bo cho chu ky KE TIEP)
-	float g1 <- 60 #s; // thoi gian xanh pha 1 trong chu ky hien tai
-	float g2 <- 60 #s; // thoi gian xanh pha 2 trong chu ky hien tai
+	float g1 <- 56 #s; // thoi gian xanh pha 1 trong chu ky hien tai
+	float g2 <- 56 #s; // thoi gian xanh pha 2 trong chu ky hien tai
 
 	int completed_cycles <- 0;
+	
+	// --- CBMP AREA CONTROLLER VARIABLES ---
+	map<string, float> green_times_per_phase <- []; // Calculated green times
+	int current_phase_index <- 0;        // Currently active phase index
+	float phase_counter <- 0.0;          // Counter for current phase (seconds)
+	bool is_initialized <- false;        // First cycle flag
 	
 	// -------------------------------------------------------------------------
 	// 4. Khối Hành động (Actions)
 	// -------------------------------------------------------------------------
 	action log_kpi {
-		completed_cycles <- completed_cycles + 1;
-		
-		// Calculate average delay for all vehicles that passed the intersection during this cycle
-		float total_delay_sum <- sum(my_nodes collect each.total_delay_in_cycle);
-		float avg_delay <- my_throughput > 0 ? (total_delay_sum / my_throughput) : 0.0;
-		
-		// Luu ra file CSV
-		string node_name <- (!empty(my_nodes)) ? my_nodes[0].name : "unknown";
-		string row <- node_name + "," + completed_cycles + "," + round(time) + "," + my_queue + "," + my_throughput + "," + (round(avg_delay * 100) / 100.0);
-		save row to: csv_filename format: "csv" rewrite: false;
-		
-		// Reset throughput and delay for next cycle
-		loop node over: my_nodes {
-			node.throughput_count <- 0; 
-			node.total_delay_in_cycle <- 0.0;
+		if (stop_simulation) { return; }
+		if (use_cbmp) {
+			completed_cycles <- completed_cycles + 1;
+			if (!empty(my_nodes)) {
+				intersection first_node <- my_nodes[0];
+				list<string> phs <- first_node.signal_phases;
+				if (length(phs) >= 2) {
+					string jnc_name <- "JNC_" + int(first_node);
+					list<roi_lane> nearby_lanes <- roi_lane where (
+						each.In_roi != nil and each.In_roi contains "_" and 
+						(each distance_to first_node.location < 60.0)
+					);
+					if (!empty(nearby_lanes)) {
+						roi_lane representative_lane <- nearby_lanes[0];
+						if (representative_lane.In_roi != nil and representative_lane.In_roi != "") {
+							list<string> tokens <- string(representative_lane.In_roi) split_with "_";
+							if (!empty(tokens) and length(tokens) >= 1) {
+								jnc_name <- upper_case(tokens[0]);
+							}
+						}
+					}
+					string row_light <- jnc_name + "," 
+						+ completed_cycles + "," 
+						+ round(green_times_per_phase[phs[0]]) + "," 
+						+ round(green_times_per_phase[phs[1]]);
+					// save row_light to: base_output_dir + "Phase_GreenTime_Log_" + csv_filename format: "csv" rewrite: false;
+				}
+			}
+			
+			// Compute cluster-level KPI aggregates
+			string jnc_friendly_name <- "JNC_" + int(my_nodes[0]);
+			if (!empty(my_nodes)) {
+				list<roi_lane> nearby_lanes <- roi_lane where (
+					each.In_roi != nil and each.In_roi contains "_" and 
+					(each distance_to my_nodes[0].location < 60.0)
+				);
+				if (!empty(nearby_lanes)) {
+					roi_lane representative_lane <- nearby_lanes[0];
+					if (representative_lane.In_roi != nil and representative_lane.In_roi != "") {
+						list<string> name_tokens <- string(representative_lane.In_roi) split_with "_";
+						if (!empty(name_tokens) and length(name_tokens) >= 1) {
+							string raw_junction_name <- name_tokens[0];
+							jnc_friendly_name <- upper_case(raw_junction_name);
+						}
+					}
+				}
+			}
+			
+			int cluster_throughput <- sum(my_nodes collect each.throughput_count);
+			float cluster_delay <- sum(my_nodes collect each.total_delay_in_cycle);
+			float avg_delay_this_cluster <- (cluster_throughput > 0) ? cluster_delay / cluster_throughput : 0.0;
+			float avg_queue_this_cluster <- sum(my_nodes collect (each.queue_sample_count > 0 ? each.accumulated_queue / each.queue_sample_count : 0.0));
+			
+			total_queue_sum <- total_queue_sum + avg_queue_this_cluster;
+			total_throughput <- total_throughput + cluster_throughput;
+			total_delay_sum <- total_delay_sum + cluster_delay;
+			total_samples <- total_samples + 1;
+			
+			string row_kpi <- jnc_friendly_name + "," 
+				+ completed_cycles + "," 
+				+ round(time) + "," 
+				+ (avg_queue_this_cluster with_precision 2) + "," 
+				+ cluster_throughput + "," 
+				+ (avg_delay_this_cluster with_precision 2);
+			save row_kpi to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: false;
+			
+			loop node over: my_nodes {
+				node.total_delay_in_cycle <- 0.0;
+				node.throughput_count <- 0;
+				node.accumulated_queue <- 0.0;
+				node.queue_sample_count <- 0;
+			}
+		} else {
+			completed_cycles <- completed_cycles + 1;
+			float total_delay_sum <- sum(my_nodes collect each.total_delay_in_cycle);
+			float avg_delay <- my_throughput > 0 ? (total_delay_sum / my_throughput) : 0.0;
+			string node_name <- (!empty(my_nodes)) ? my_nodes[0].name : "unknown";
+			string row <- node_name + "," + completed_cycles + "," + round(time) + "," + my_queue + "," + my_throughput + "," + (round(avg_delay * 100) / 100.0);
+			save row to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: false;
+			loop node over: my_nodes {
+				node.throughput_count <- 0; 
+				node.total_delay_in_cycle <- 0.0;
+			}
+			my_throughput <- 0;
 		}
-		my_throughput <- 0;
 	}
 	
 	//obj for compute_green_time - tinh g1/g2 cho CHU KY KE TIEP dua vao phi hien tai
 	action compute_green_time {
-		// Tinh toan ap suat (Pressure) theo Cong thuc 4: w = phi_in - sum(R * phi_out)
-		// Gia su ty le re co dinh: 70% di thang, 15% re trai, 15% re phai
-		float p_straight <- 0.7;
-		float p_left <- 0.15;
-		float p_right <- 0.15;
-		
-		float w_N <- 0.0; float w_S <- 0.0; float w_E <- 0.0; float w_W <- 0.0;
-		float gamma1 <- 0.0;
-		float gamma2 <- 0.0;
-		loop node over: my_nodes {
-			w_N <- w_N + max(0.0, node.phi_N - (p_straight * node.phi_out_S + p_left * node.phi_out_E + p_right * node.phi_out_W));
-			w_S <- w_S + max(0.0, node.phi_S - (p_straight * node.phi_out_N + p_left * node.phi_out_W + p_right * node.phi_out_E));
-			w_E <- w_E + max(0.0, node.phi_E - (p_straight * node.phi_out_W + p_left * node.phi_out_S + p_right * node.phi_out_N));
-			w_W <- w_W + max(0.0, node.phi_W - (p_straight * node.phi_out_E + p_left * node.phi_out_N + p_right * node.phi_out_S));
-		}
-		// Ap suat tong hop cua pha (Cong thuc 7)
-		// Gia dinh: axis_1 la pha Bac-Nam, axis_2 la pha Dong-Tay
-		// Hệ số năng lực thông hành Clm = 1.0 cho tất cả
-		float gamma1 <- w_N + w_S;
-		float gamma2 <- w_E + w_W;
-		float gamma_total <- gamma1 + gamma2;
-		
-		//obj for available time ratio: 1 - L/tau (cong thuc 9)
-		float available_ratio <- 1.0 - (lost_time / cycle_duration);
-		float min_ratio <- min_green / cycle_duration; // kappa/tau
-
-		float lam1 <- 0.0;
-		float lam2 <- 0.0;
-		
-		if (gamma_total <= 0) {
-			// Khong co ap suat: chia deu, van dam bao min
-			lam1 <- available_ratio / 2.0;
-			lam2 <- available_ratio / 2.0;
-		} else {
-			//obj for min green constraint - rang buoc kappa PHAI DUOC AP TRUOC
-			float remainder <- available_ratio - 2.0 * min_ratio;
+		if (use_cbmp) {
+			if (empty(my_nodes)) { return; }
+			intersection node <- my_nodes[0]; 
+			list<string> phases <- node.signal_phases; 
+			if (empty(phases) or length(phases) < 2) { return; }
 			
-			if (remainder <= 0.0) {
+			loop p over: phases {
+				float avg_p <- 0.0;
+				if (node.accumulated_phase_pressures contains_key p) {
+					avg_p <- (node.pressure_sample_count > 0) ? (node.accumulated_phase_pressures[p] / node.pressure_sample_count) : 0.0;
+				}
+				node.gamma_phase_pressures[p] <- max(0.0, avg_p);
+			}
+			
+			loop p over: phases {
+				node.accumulated_phase_pressures[p] <- 0.0;
+			}
+			node.pressure_sample_count <- 0;
+
+			float gamma_total <- 0.0;
+			loop p over: phases {
+				float gamma_p <- 0.0;
+				if (node.gamma_phase_pressures contains_key p) {
+					gamma_p <- node.gamma_phase_pressures[p];
+				}
+				gamma_total <- gamma_total + gamma_p;
+			}
+			
+			float total_lost_time <- length(phases) * lost_time;
+			float total_min_green <- length(phases) * min_green;
+			float available_remainder <- cycle_duration - total_lost_time - total_min_green;
+
+			loop p over: phases {
+				float gamma_p <- 0.0;
+				if (node.gamma_phase_pressures contains_key p) {
+					gamma_p <- node.gamma_phase_pressures[p];
+				}
+				if (gamma_total < 0.05) {
+					green_times_per_phase[p] <- min_green + (available_remainder / length(phases));
+				} else {
+					green_times_per_phase[p] <- min_green + available_remainder * (gamma_p / gamma_total);
+				}
+			}
+		} else {
+			// Tinh toan ap suat (Pressure) theo Cong thuc 4: w = phi_in - sum(R * phi_out)
+			// Gia su ty le re co dinh: 70% di thang, 15% re trai, 15% re phai
+			float p_straight <- 0.7;
+			float p_left <- 0.15;
+			float p_right <- 0.15;
+			
+			float w_N <- 0.0; float w_S <- 0.0; float w_E <- 0.0; float w_W <- 0.0;
+			float gamma1_val <- 0.0;
+			float gamma2_val <- 0.0;
+			loop node over: my_nodes {
+				w_N <- w_N + max(0.0, node.phi_N - (p_straight * node.phi_out_S + p_left * node.phi_out_E + p_right * node.phi_out_W));
+				w_S <- w_S + max(0.0, node.phi_S - (p_straight * node.phi_out_N + p_left * node.phi_out_W + p_right * node.phi_out_E));
+				w_E <- w_E + max(0.0, node.phi_E - (p_straight * node.phi_out_W + p_left * node.phi_out_S + p_right * node.phi_out_N));
+				w_W <- w_W + max(0.0, node.phi_W - (p_straight * node.phi_out_E + p_left * node.phi_out_N + p_right * node.phi_out_S));
+			}
+			// Ap suat tong hop cua pha (Cong thuc 7)
+			// Gia dinh: axis_1 la pha Bac-Nam, axis_2 la pha Dong-Tay
+			// Hệ số năng lực thông hành Clm = 1.0 cho tất cả
+			float gamma1_val_tot <- w_N + w_S;
+			float gamma2_val_tot <- w_E + w_W;
+			float gamma_total <- gamma1_val_tot + gamma2_val_tot;
+			
+			//obj for available time ratio: 1 - L/tau (cong thuc 9)
+			float available_ratio <- 1.0 - (lost_time / cycle_duration);
+			float min_ratio <- min_green / cycle_duration; // kappa/tau
+
+			float lam1 <- 0.0;
+			float lam2 <- 0.0;
+			
+			if (gamma_total <= 0) {
+				// Khong co ap suat: chia deu, van dam bao min
 				lam1 <- available_ratio / 2.0;
 				lam2 <- available_ratio / 2.0;
 			} else {
-				// Buoc 2: phan bo phan con lai ty le theo ap suat gamma
-				lam1 <- min_ratio + remainder * (gamma1 / gamma_total);
-				lam2 <- min_ratio + remainder * (gamma2 / gamma_total);
+				//obj for min green constraint - rang buoc kappa PHAI DUOC AP TRUOC
+				float remainder <- available_ratio - 2.0 * min_ratio;
+				
+				if (remainder <= 0.0) {
+					lam1 <- available_ratio / 2.0;
+					lam2 <- available_ratio / 2.0;
+				} else {
+					// Buoc 2: phan bo phan con lai ty le theo ap suat gamma
+					lam1 <- min_ratio + remainder * (gamma1_val_tot / gamma_total);
+					lam2 <- min_ratio + remainder * (gamma2_val_tot / gamma_total);
+				}
 			}
-		}
-		
-		//obj for g_S calculation - cong thuc (11): g_S = lambda*_S x tau
-		g1 <- lam1 * cycle_duration;
-		g2 <- lam2 * cycle_duration;
-		
-		//obj for CBMP verification debug - in ra moi lan tinh chu ky moi
-		// Kiem tra: g1+g2 phai xap xi cycle_duration - lost_time = 116s
-		// Kiem tra: g1 va g2 phai >= min_green = 10s
-		// Kiem tra: neu gamma1 > gamma2 thi g1 > g2 (pha dong xe duoc xanh nhieu hon)
-		intersection target_node <- my_nodes first_with (each.name = "intersection33");
-		if (target_node != nil) {
-			float g_total <- round((g1 + g2) * 10) / 10.0;
-			write "=== [CBMP] Cycle " + cycle + " | controller cho " + target_node.name + " ===";
-			write "  γ1(axis1): " + (round(gamma1 * 1000) / 10.0) + "% | γ2(axis2): " + (round(gamma2 * 1000) / 10.0) + "%";
-			if (gamma_total <= 0) {
-				write "  [!] Canh bao: phi = 0, chia deu thoi gian (CBMP chua hoat dong, kiem tra detection zone)";
-			}
-			write "  g1(N+S xanh): " + (round(g1 * 10) / 10.0) + "s | g2(E+W xanh): " + (round(g2 * 10) / 10.0) + "s | tong: " + g_total + "s";
-			bool g1_ok <- g1 >= min_green;
-			bool g2_ok <- g2 >= min_green;
-			bool total_ok <- abs(g1 + g2 - (cycle_duration - lost_time)) < 0.5;
-			write "  Kiem tra: g1>=" + min_green + "s? " + (g1_ok ? "OK" : "FAIL") 
-			    + " | g2>=" + min_green + "s? " + (g2_ok ? "OK" : "FAIL")
-			    + " | tong hop le? " + (total_ok ? "OK" : "FAIL");
+			
+			//obj for g_S calculation - cong thuc (11): g_S = lambda*_S x tau
+			g1 <- lam1 * cycle_duration;
+			g2 <- lam2 * cycle_duration;
+			
+			//obj for CBMP verification debug - in ra moi lan tinh chu ky moi
+			// Kiem tra: g1+g2 phai xap xi cycle_duration - lost_time = 116s
+			// Kiem tra: g1 va g2 phai >= min_green = 10s
+			// Kiem tra: neu gamma1 > gamma2 thi g1 > g2 (pha dong xe duoc xanh nhieu hon)
+			intersection target_node <- my_nodes first_with (each.name = "intersection33");
+//			if (target_node != nil) {
+//				float g_total <- round((g1 + g2) * 10) / 10.0;
+//				write "=== [CBMP] Cycle " + cycle + " | controller cho " + target_node.name + " ===";
+//				write "  γ1(axis1): " + (round(gamma1_val_tot * 1000) / 10.0) + "% | γ2(axis2): " + (round(gamma2_val_tot * 1000) / 10.0) + "%";
+//				if (gamma_total <= 0) {
+//					write "  [!] Canh bao: phi = 0, chia deu thoi gian (CBMP chua hoat dong, kiem tra detection zone)";
+//				}
+//				write "  g1(N+S xanh): " + (round(g1 * 10) / 10.0) + "s | g2(E+W xanh): " + (round(g2 * 10) / 10.0) + "s | tong: " + g_total + "s";
+//				bool g1_ok <- g1 >= min_green;
+//				bool g2_ok <- g2 >= min_green;
+//				bool total_ok <- abs(g1 + g2 - (cycle_duration - lost_time)) < 0.5;
+//				write "  Kiem tra: g1>=" + min_green + "s? " + (g1_ok ? "OK" : "FAIL") 
+//				    + " | g2>=" + min_green + "s? " + (g2_ok ? "OK" : "FAIL")
+//				    + " | tong hop le? " + (total_ok ? "OK" : "FAIL");
+//			}
 		}
 	}
 
@@ -888,17 +1065,29 @@ species traffic_controller {
 		float gam1 <- 0.0;
 		float gam2 <- 0.0;
 		loop node over: my_nodes {	
-			float c1 <- (!empty(node.ways1)) ? float(node.ways1[0].num_lanes) : 1.0;
-			float c2 <- (!empty(node.ways2)) ? float(node.ways2[0].num_lanes) : 1.0;
-			gam1 <- gam1 + c1 * node.w_N_paper + c1 * node.w_S_paper;
-			gam2 <- gam2 + c2 * node.w_E_paper + c2 * node.w_W_paper;
+			// Compute average cycle pressure (smooth feedback - Method 2)
+			node.w_N_paper <- node.paper_step_count > 0 ? (node.w_N_sum / node.paper_step_count) : 0.0;
+			node.w_S_paper <- node.paper_step_count > 0 ? (node.w_S_sum / node.paper_step_count) : 0.0;
+			node.w_E_paper <- node.paper_step_count > 0 ? (node.w_E_sum / node.paper_step_count) : 0.0;
+			node.w_W_paper <- node.paper_step_count > 0 ? (node.w_W_sum / node.paper_step_count) : 0.0;
+			
+			// Reset accumulators for next cycle
+			node.w_N_sum <- 0.0;
+			node.w_S_sum <- 0.0;
+			node.w_E_sum <- 0.0;
+			node.w_W_sum <- 0.0;
+			node.paper_step_count <- 0;
+			
+			float c <- 2.5;
+			gam1 <- gam1 + c * node.w_N_paper + c * node.w_S_paper;
+			gam2 <- gam2 + c * node.w_E_paper + c * node.w_W_paper;
 		}
 		float gam_total <- gam1 + gam2;
 
 		// Formula (16): λ* = arg max Σ λ_S*γ_S
 		// s.t. λ_S >= κ/τ,  Σλ <= 1 - L/τ
 		// For 2 phases: closed-form LP solution = proportional allocation
-		float avail <- 1.0 - (lost_time / cycle_duration);  // 1 - L/τ
+		float avail <- 1.0 - ((2*lost_time) / cycle_duration);  // 1 - L/τ
 		float kappa <- min_green / cycle_duration;           // κ/τ
 		float lam1  <- 0.0;
 		float lam2  <- 0.0;
@@ -922,30 +1111,30 @@ species traffic_controller {
 
 		// Debug log — fires every phase transition (same style as CBMP v1)
 		intersection target_node <- my_nodes first_with (each.name = "intersection35");
-		if (target_node != nil){
-			float g_total <- round((g1 + g2) * 10) / 10.0;
-			write "=== [PAPER-v2] Cycle " + cycle + " | " + target_node.name + " ===";
-			write "  x: N=" + target_node.x_N + " S=" + target_node.x_S
-				+ " E=" + target_node.x_E + " W=" + target_node.x_W;
-			write "  w: N=" + round(target_node.w_N_paper*10)/10.0
-				+ " S=" + round(target_node.w_S_paper*10)/10.0
-				+ " E=" + round(target_node.w_E_paper*10)/10.0
-				+ " W=" + round(target_node.w_W_paper*10)/10.0;
-			write "  γ1(N+S)=" + round(gam1*10)/10.0
-				+ " | γ2(E+W)=" + round(gam2*10)/10.0;
-			if (gam_total <= 0.0) {
-				write "  [!] Canh bao: x=0, chia deu thoi gian (kiem tra vung detect)";
-			}
-			write "  g1(N+S)=" + round(g1*10)/10.0 + "s"
-				+ " | g2(E+W)=" + round(g2*10)/10.0 + "s"
-				+ " | tong=" + g_total + "s";
-			bool g1_ok <- g1 >= min_green;
-			bool g2_ok <- g2 >= min_green;
-			bool total_ok <- abs(g1 + g2 - (cycle_duration - lost_time)) < 0.5;
-			write "  Check: g1>=" + min_green + "s? " + (g1_ok ? "OK" : "FAIL")
-				+ " | g2>=" + min_green + "s? " + (g2_ok ? "OK" : "FAIL")
-				+ " | tong hop le? " + (total_ok ? "OK" : "FAIL");
-		}
+//		if (target_node != nil){
+//			float g_total <- round((g1 + g2) * 10) / 10.0;
+//			write "=== [PAPER-v2] Cycle " + cycle + " | " + target_node.name + " ===";
+//			write "  x: N=" + target_node.x_N + " S=" + target_node.x_S
+//				+ " E=" + target_node.x_E + " W=" + target_node.x_W;
+//			write "  w: N=" + round(target_node.w_N_paper*10)/10.0
+//				+ " S=" + round(target_node.w_S_paper*10)/10.0
+//				+ " E=" + round(target_node.w_E_paper*10)/10.0
+//				+ " W=" + round(target_node.w_W_paper*10)/10.0;
+//			write "  γ1(N+S)=" + round(gam1*10)/10.0
+//				+ " | γ2(E+W)=" + round(gam2*10)/10.0;
+//			if (gam_total <= 0.0) {
+//				write "  [!] Canh bao: x=0, chia deu thoi gian (kiem tra vung detect)";
+//			}
+//			write "  g1(N+S)=" + round(g1*10)/10.0 + "s"
+//				+ " | g2(E+W)=" + round(g2*10)/10.0 + "s"
+//				+ " | tong=" + g_total + "s";
+//			bool g1_ok <- g1 >= min_green;
+//			bool g2_ok <- g2 >= min_green;
+//			bool total_ok <- abs(g1 + g2 - (cycle_duration - lost_time)) < 0.5;
+//			write "  Check: g1>=" + min_green + "s? " + (g1_ok ? "OK" : "FAIL")
+//				+ " | g2>=" + min_green + "s? " + (g2_ok ? "OK" : "FAIL")
+//				+ " | tong hop le? " + (total_ok ? "OK" : "FAIL");
+//		}
 	}
 	
 	// -------------------------------------------------------------------------
@@ -983,22 +1172,47 @@ species traffic_controller {
 				}
 			}
 		} else if (use_cbmp) {
-			// --- CBMP v1 (phi area-based) mode ---
-			cbmp_counter <- cbmp_counter + step;
-			if (is_green) {
-				if (cbmp_counter >= g1) {
-					cbmp_counter <- 0.0;
-					ask my_nodes { do to_red; }
-					is_green <- false;
-					do compute_green_time;
-				}
-			} else {
-				if (cbmp_counter >= g2) {
-					cbmp_counter <- 0.0;
-					ask my_nodes { do to_green; }
-					is_green <- true;
-					do log_kpi;
-					do compute_green_time;
+			// --- CBMP Area (ROI) mode from zone ---
+			if (empty(my_nodes)) { return; }
+			
+			intersection root_node <- my_nodes[0];
+			list<string> phases <- root_node.signal_phases;
+			if (empty(phases)) { return; }
+			
+			// Initialize green times on first run
+			if (!is_initialized) {
+				do compute_green_time;
+				is_initialized <- true;
+			}
+			
+			// Get current active phase and its green time
+			string active_phase <- phases[current_phase_index];
+			float allocated_green_time <- min_green;
+			if (green_times_per_phase contains_key active_phase) {
+			    allocated_green_time <- green_times_per_phase[active_phase];
+			}			
+			
+			phase_counter <- phase_counter + step;
+			
+			// Update traffic light visuals
+			ask traffic_light_visual where (each.my_parent in my_nodes) {
+			    if (self.my_phase = active_phase) { 
+				state <- "green"; 
+			    } else {
+				state <- "red";   
+			    }
+			}
+
+			// Switch to next phase when green time expires
+			if (phase_counter >= allocated_green_time) {
+				phase_counter <- 0.0;
+				current_phase_index <- current_phase_index + 1;
+				
+				if (current_phase_index >= length(phases)) {
+					current_phase_index <- 0;           // Back to first phase
+					do compute_green_time;              // Recalculate green times
+					do log_kpi;                         // Log KPI for completed cycle
+					ask world { do write_summary; }     // Update summary to have latest data
 				}
 			}
 		} else {
@@ -1026,6 +1240,7 @@ species traffic_light_visual {
     string axis;  // axis identifier
     string state <- "red"; // visual state of traffic light
 	string osm_id;
+	string my_phase;
 	
     aspect default {
     	rgb light_color <- (state = "green") ? #green : #red;

@@ -10,7 +10,7 @@ model Vehicles
 import "Road.gaml"
 import "Intersection.gaml"
 import "Roi.gaml"
-import"Main.gaml"
+import "Main.gaml"
 
 /* Insert your model definition here */
 species vehicle skills: [driving] {
@@ -30,6 +30,7 @@ species vehicle skills: [driving] {
 //            write "XE " + name + " ĐÃ CHẠM ĐƯỢC VÀO LÀN: " + (touched_rois[0]).name;
 //        }
 //    }
+
 	road previous_road <- nil;
 	//find road
 	reflex move {
@@ -57,8 +58,14 @@ species vehicle skills: [driving] {
 				if (previous_road != nil) {
 					intersection crossed_node <- intersection(road_network target_of road(previous_road));
 					if (crossed_node != nil and crossed_node.is_traffic_signal) {
+						// Only count throughput if the previous road was NOT an internal link within the cluster
+						intersection source_node <- intersection(road_network source_of road(previous_road));
+						bool is_internal_link <- (source_node != nil and source_node.is_traffic_signal);
+						
 						ask crossed_node { 
-							throughput_count <- throughput_count + 1; 
+							if (!is_internal_link) {
+								throughput_count <- throughput_count + 1; 
+							}
 							total_delay_in_cycle <- total_delay_in_cycle + myself.total_delay;
 						}
 						total_delay <- 0.0; // reset vehicle delay after crossing
@@ -66,32 +73,65 @@ species vehicle skills: [driving] {
 				}
 				previous_road <- road(current_road);
 			}
-			// stop only if red traffic light is directly ahead within 90 degrees
-			traffic_light_visual light_ahead <- traffic_light_visual closest_to self;
+			// =========================================================================
+			// TRAFFIC LIGHT LOGIC (2-PHASE AND PAPER COMPLIANT)
+			// =========================================================================
 			bool should_stop <- false;
 			bool should_slow <- false;
-			float dist_to_light <- (light_ahead != nil) ? self distance_to light_ahead : #infinity;
+			float dist_to_light <- #infinity;
 
-			if (light_ahead != nil and light_ahead.state = "red") {
-				float angle_to_light <- float(self towards light_ahead);
-				float diff_ang <- abs(angle_to_light - heading) mod 360.0;
-				if (diff_ang > 180.0) { diff_ang <- 360.0 - diff_ang; }
-				if (diff_ang < 90.0) {
-					if (dist_to_light < 5.0)  { should_stop <- true; }  // hard stop zone
-					else if (dist_to_light < 18.0) { should_slow <- true; } // braking zone
+			if (use_cbmp) {
+				// --- CBMP Area (ROI) Traffic Light Logic from zone ---
+				point thuc_te_pos <- self.compute_position();
+				list<roi_lane> nearby_rois <- roi_lane at_distance 15.0;
+				roi_lane my_roi <- nil;
+				if (!empty(nearby_rois)) {
+					my_roi <- nearby_rois closest_to thuc_te_pos; 
+				}
+				if (my_roi != nil and my_roi.phase_id != nil and my_roi.phase_id != "") {
+					string required_phase <- my_roi.phase_id;
+					list<traffic_light_visual> nearby_lights <- traffic_light_visual at_distance 50.0;
+					traffic_light_visual exact_light <- first(nearby_lights where (each.my_phase = required_phase));
+					if (exact_light != nil) {
+						point dir_to_light <- exact_light.location - self.location;
+						float dot_prod <- cos(heading) * dir_to_light.x + sin(heading) * dir_to_light.y;
+						if (dot_prod > 0.0) {
+							dist_to_light <- self distance_to exact_light;
+							if (exact_light.state = "red") {
+								if (dist_to_light < 6.0)  { should_stop <- true; }  
+								else if (dist_to_light < 22.0) { should_slow <- true; } 
+							}
+						}
+					}
+				}
+			} else {
+				// --- Original Paper & Fixed-Time Traffic Light Logic ---
+				traffic_light_visual light_ahead <- traffic_light_visual closest_to self;
+				dist_to_light <- (light_ahead != nil) ? self distance_to light_ahead : #infinity;
+
+				if (light_ahead != nil and light_ahead.state = "red") {
+					float angle_to_light <- float(self towards light_ahead);
+					float diff_ang <- abs(angle_to_light - heading) mod 360.0;
+					if (diff_ang > 180.0) { diff_ang <- 360.0 - diff_ang; }
+					if (diff_ang < 90.0) {
+						if (dist_to_light < 5.0)  { should_stop <- true; }  // hard stop zone
+						else if (dist_to_light < 18.0) { should_slow <- true; } // braking zone
+					}
 				}
 			}
 
 			if (should_stop) {
-				// hold position at red light
 				speed <- 0.0;
 			} else if (should_slow) {
-				// gradual braking: reduce speed proportionally to distance
-				float brake_ratio <- (dist_to_light - 5.0) / 13.0; // 1.0 far, 0.0 at stop line
-				speed <- max_speed * brake_ratio * 0.4;
+				if (use_cbmp) {
+					float brake_ratio <- (dist_to_light - 6.0) / 16.0; 
+					speed <- max_speed * max(0.0, brake_ratio) * 0.4;
+				} else {
+					float brake_ratio <- (dist_to_light - 5.0) / 13.0; // 1.0 far, 0.0 at stop line
+					speed <- max_speed * brake_ratio * 0.4;
+				}
 				do drive;
 			} else {
-				// restore speed in case it was held at 0 from previous red light
 				if (speed = 0.0) { speed <- max_speed * 0.5; }
 				do drive;
 			}
@@ -176,7 +216,6 @@ species truck parent: vehicle {
 	aspect heat_dot {
 		draw circle(16) color: rgb(255, 60, 0, 100);
 	}
-
 }
 
 //species ambulance parent: vehicle {
