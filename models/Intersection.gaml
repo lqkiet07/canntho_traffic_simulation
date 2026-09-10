@@ -19,6 +19,9 @@ import "Main.gaml"
 species gis_signal_point {
 	string osm_id;
 }
+species friendly_roi_name_provider {
+	string In_roi;
+}
 
 // =========================================================================
 // SPECIES: INTERSECTION
@@ -92,10 +95,12 @@ species intersection skills: [intersection_skill] {
 	int x_out_W <- 0;
 	// Queue weight w_{l,m} = x_{l,m} - sum(r * x_out) — formula (10)
 	// NOTE: turn ratios r fixed at 0.7/0.15/0.15; dynamic version is future work
-	float w_N_paper <- 0.0;
-	float w_S_paper <- 0.0;
-	float w_E_paper <- 0.0;
-	float w_W_paper <- 0.0;
+	float w_p1_paper <- 0.0;
+	float w_p2_paper <- 0.0;
+	float w_p1_sum <- 0.0;
+	float w_p2_sum <- 0.0;
+	int last_cnt_p1 <- 0;
+	int last_cnt_p2 <- 0;
 	
 	// Accumulators for average cycle pressure (smooth feedback)
 	float w_N_sum <- 0.0;
@@ -316,7 +321,7 @@ species intersection skills: [intersection_skill] {
 	// -------------------------------------------------------------------------
 	// 5. Khối Phản xạ (Reflexes)
 	// -------------------------------------------------------------------------
-	reflex calculate_queue when: is_traffic_signal and !use_cbmp {
+	reflex calculate_queue when: is_traffic_signal and !use_cbmp and !use_paper_cbmp {
 		// Reset queue map
 		loop rd over: ways1 + ways2 { queue_per_road[rd] <- 0; }
 		
@@ -570,11 +575,11 @@ species intersection skills: [intersection_skill] {
 	// =========================================================================
 	reflex calculate_queue_paper when: is_traffic_signal and use_paper_cbmp {
 		list<vehicle> all_v <- (motobike as list) + (car as list) + (truck as list);
-		list<vehicle> near_v <- all_v where (each distance_to self < 200.0);
+		list<vehicle> near_v <- all_v where (each distance_to self < paper_detection_radius);
 		list<traffic_light_visual> my_lights <- traffic_light_visual where (each.my_parent = self);
 
-		int cnt_N <- 0; int cnt_S <- 0; int cnt_E <- 0; int cnt_W <- 0;
-		int out_N <- 0; int out_S <- 0; int out_E <- 0; int out_W <- 0;
+		int cnt_p1 <- 0; int cnt_p2 <- 0;
+		int out_p1 <- 0; int out_p2 <- 0;
 
 		loop v over: near_v {
 			if (v.current_road != nil) {
@@ -585,7 +590,7 @@ species intersection skills: [intersection_skill] {
 				bool outgoing <- (src  != nil and src  distance_to self < 50.0);
 
 				if (incoming) {
-					// Stop line check — same logic as calculate_queue
+					// Stop line check
 					float ang_cv <- float(self.location towards v.location);
 					traffic_light_visual sl <- nil;
 					if (!empty(my_lights)) {
@@ -596,150 +601,46 @@ species intersection skills: [intersection_skill] {
 					bool behind <- true;
 					if (sl != nil) { behind <- (v distance_to self) > (sl distance_to self); }
 
-					if (behind) {
-						if (name = "intersection35") {
-							// Special logic for intersection35 using closest stop light's osm_id
-							traffic_light_visual closest_lg <- my_lights closest_to v;
-							if (closest_lg != nil) {
-								if (closest_lg.osm_id = "2") {
-									cnt_N <- cnt_N + 1; // North incoming
-								} else if (closest_lg.osm_id = "4") {
-									cnt_S <- cnt_S + 1; // South incoming
-								} else if (closest_lg.osm_id = "1") {
-									cnt_W <- cnt_W + 1; // West incoming
-								} else if (closest_lg.osm_id = "3") {
-									cnt_E <- cnt_E + 1; // East incoming
-								}
-							}
-						} else {
-							// Adaptive Relative Compass logic for other intersections
-							float ang <- float(v.location towards self.location);
-							string direction <- "";
-							float min_diff <- 360.0;
-							
-							if (ang_in_W >= 0.0) {
-								float d <- abs(ang - ang_in_W) mod 360.0;
-								if (d > 180.0) { d <- 360.0 - d; }
-								if (d < min_diff) { min_diff <- d; direction <- "W"; }
-							}
-							if (ang_in_N >= 0.0) {
-								float d <- abs(ang - ang_in_N) mod 360.0;
-								if (d > 180.0) { d <- 360.0 - d; }
-								if (d < min_diff) { min_diff <- d; direction <- "N"; }
-							}
-							if (ang_in_E >= 0.0) {
-								float d <- abs(ang - ang_in_E) mod 360.0;
-								if (d > 180.0) { d <- 360.0 - d; }
-								if (d < min_diff) { min_diff <- d; direction <- "E"; }
-							}
-							if (ang_in_S >= 0.0) {
-								float d <- abs(ang - ang_in_S) mod 360.0;
-								if (d > 180.0) { d <- 360.0 - d; }
-								if (d < min_diff) { min_diff <- d; direction <- "S"; }
-							}
-							
-							// Fallback to absolute compass
-							if (direction = "") {
-								if      (ang >= 315 or ang <  45)  { direction <- "W"; }
-								else if (ang >= 45  and ang < 135)  { direction <- "N"; }
-								else if (ang >= 135 and ang < 225)  { direction <- "E"; }
-								else                                { direction <- "S"; }
-							}
-							
-							if      (direction = "W") { cnt_W <- cnt_W + 1; }
-							else if (direction = "N") { cnt_N <- cnt_N + 1; }
-							else if (direction = "E") { cnt_E <- cnt_E + 1; }
-							else if (direction = "S") { cnt_S <- cnt_S + 1; }
+					if (behind and sl != nil) {
+						if (!empty(signal_phases)) {
+							if (sl.my_phase = signal_phases[0]) { cnt_p1 <- cnt_p1 + 1; }
+							else if (length(signal_phases) > 1 and sl.my_phase = signal_phases[1]) { cnt_p2 <- cnt_p2 + 1; }
 						}
 					}
 				}
 				if (outgoing) {
-					if (name = "intersection35") {
-						// Special logic for outgoing vehicles at intersection35 based on closest exit direction light
-						// Compute opposite direction angle to find corresponding exit lane light
-						float ang_from_center <- float(self.location towards v.location);
-						traffic_light_visual closest_lg <- nil;
-						if (!empty(my_lights)) {
-							closest_lg <- my_lights with_min_of (
-								abs(((float(self.location towards each.location) - ((ang_from_center + 180.0) mod 360.0)) + 360.0) mod 360.0)
-							);
+					float ang_out <- float(self.location towards v.location);
+					traffic_light_visual sl_out <- nil;
+					if (!empty(my_lights)) {
+						sl_out <- my_lights with_min_of (
+							abs(((float(self.location towards each.location) - ang_out) + 360.0) mod 360.0)
+						);
+					}
+					if (sl_out != nil) {
+						if (!empty(signal_phases)) {
+							if (sl_out.my_phase = signal_phases[0]) { out_p1 <- out_p1 + 1; }
+							else if (length(signal_phases) > 1 and sl_out.my_phase = signal_phases[1]) { out_p2 <- out_p2 + 1; }
 						}
-						if (closest_lg != nil) {
-							if (closest_lg.osm_id = "2") {
-								out_S <- out_S + 1; // Exit towards South (opposite of North input)
-							} else if (closest_lg.osm_id = "4") {
-								out_N <- out_N + 1; // Exit towards North (opposite of South input)
-							} else if (closest_lg.osm_id = "1") {
-								out_E <- out_E + 1; // Exit towards East (opposite of West input)
-							} else if (closest_lg.osm_id = "3") {
-								out_W <- out_W + 1; // Exit towards West (opposite of East input)
-							}
-						}
-					} else {
-						// Adaptive Relative Compass logic for outgoing vehicles
-						float ang <- float(self.location towards v.location);
-						string direction_out <- "";
-						float min_diff_out <- 360.0;
-						
-						if (ang_out_E >= 0.0) {
-							float d <- abs(ang - ang_out_E) mod 360.0;
-							if (d > 180.0) { d <- 360.0 - d; }
-							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "E"; }
-						}
-						if (ang_out_S >= 0.0) {
-							float d <- abs(ang - ang_out_S) mod 360.0;
-							if (d > 180.0) { d <- 360.0 - d; }
-							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "S"; }
-						}
-						if (ang_out_W >= 0.0) {
-							float d <- abs(ang - ang_out_W) mod 360.0;
-							if (d > 180.0) { d <- 360.0 - d; }
-							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "W"; }
-						}
-						if (ang_out_N >= 0.0) {
-							float d <- abs(ang - ang_out_N) mod 360.0;
-							if (d > 180.0) { d <- 360.0 - d; }
-							if (d < min_diff_out) { min_diff_out <- d; direction_out <- "N"; }
-						}
-						
-						// Fallback to absolute compass for outgoing
-						if (direction_out = "") {
-							if      (ang >= 315 or ang <  45)  { direction_out <- "E"; }
-							else if (ang >= 45  and ang < 135)  { direction_out <- "S"; }
-							else if (ang >= 135 and ang < 225)  { direction_out <- "W"; }
-							else                                { direction_out <- "N"; }
-						}
-						
-						if      (direction_out = "E") { out_E <- out_E + 1; }
-						else if (direction_out = "S") { out_S <- out_S + 1; }
-						else if (direction_out = "W") { out_W <- out_W + 1; }
-						else if (direction_out = "N") { out_N <- out_N + 1; }
 					}
 				}
 			}
 		}
 
-		x_N <- cnt_N; x_S <- cnt_S; x_E <- cnt_E; x_W <- cnt_W;
-		x_out_N <- out_N; x_out_S <- out_S; x_out_E <- out_E; x_out_W <- out_W;
-
-		// Formula (10): w_{l,m} = x_{l,m} - Σ r_{m,p} * x_{m,p}
-		// Turn ratios: straight=0.7, left=0.15, right=0.15 (fixed; see NOTE above)
+		// Formula (10) adaptation: sum of w_l,m over the phase
 		float rs <- 0.7;  float rl <- 0.15;  float rr <- 0.15;
-		w_N_paper <- max(0.0, float(x_N) - (rs * x_out_S + rl * x_out_E + rr * x_out_W));
-		w_S_paper <- max(0.0, float(x_S) - (rs * x_out_N + rl * x_out_W + rr * x_out_E));
-		w_E_paper <- max(0.0, float(x_E) - (rs * x_out_W + rl * x_out_S + rr * x_out_N));
-		w_W_paper <- max(0.0, float(x_W) - (rs * x_out_E + rl * x_out_N + rr * x_out_S));
+		w_p1_paper <- max(0.0, float(cnt_p1) - (rs * float(out_p1) + (rl + rr) * float(out_p2)));
+		w_p2_paper <- max(0.0, float(cnt_p2) - (rs * float(out_p2) + (rl + rr) * float(out_p1)));
 		
-		// Accumulate pressure over the cycle for feedback smoothing (Method 2)
-		w_N_sum <- w_N_sum + w_N_paper;
-		w_S_sum <- w_S_sum + w_S_paper;
-		w_E_sum <- w_E_sum + w_E_paper;
-		w_W_sum <- w_W_sum + w_W_paper;
+		w_p1_sum <- w_p1_sum + w_p1_paper;
+		w_p2_sum <- w_p2_sum + w_p2_paper;
 		paper_step_count <- paper_step_count + 1;
 
-		// if ((name = "intersection35") and cycle mod 10 = 0) {
-		// 	write "[Debug " + name + "] x_N=" + x_N + ", x_S=" + x_S + ", x_E=" + x_E + ", x_W=" + x_W + " | w_N=" + round(w_N_paper*10)/10.0 + ", w_S=" + round(w_S_paper*10)/10.0 + ", w_E=" + round(w_E_paper*10)/10.0 + ", w_W=" + round(w_W_paper*10)/10.0;
-		// }
+		if (debug_mode and paper_step_count mod 10 = 0) {
+			write "[PAPER-x] " + name + " @t=" + round(time) 
+				+ " | in: P1=" + cnt_p1 + " P2=" + cnt_p2
+				+ " | out: P1=" + out_p1 + " P2=" + out_p2
+				+ " | w: P1=" + (round(w_p1_paper*10)/10.0) + " P2=" + (round(w_p2_paper*10)/10.0);
+		}
 	}
 
 	// Calculate queue length for CBMP Area (100% faithful to zone folder)
@@ -839,6 +740,37 @@ species traffic_controller {
 	int current_phase_index <- 0;        // Currently active phase index
 	float phase_counter <- 0.0;          // Counter for current phase (seconds)
 	bool is_initialized <- false;        // First cycle flag
+	string current_paper_phase <- "";    // Active phase name for Paper mode light control
+	
+	// Custom variables for non-overlapping cluster-level queue calculation
+	float accumulated_stopped_queue <- 0.0;
+	int stopped_queue_samples <- 0;
+
+	reflex calculate_stopped_queue_kpi {
+		int stopped_count <- 0;
+		list<road> all_roads_in <- [];
+		loop node over: my_nodes {
+			loop rd over: node.roads_in {
+				if !(all_roads_in contains road(rd)) {
+					all_roads_in <- all_roads_in + [road(rd)];
+				}
+			}
+		}
+		
+		list<vehicle> all_stopped_vehicles <- [];
+		loop rd over: all_roads_in {
+			list<vehicle> veh_on_road <- ((motobike as list) + (car as list) + (truck as list)) where (road(each.current_road) = rd);
+			list<vehicle> stopped_veh <- veh_on_road where (
+				each distance_to self.location < 120.0 and 
+				(each.speed < 5 #km/#h or each.real_speed < 5 #km/#h)
+			);
+			all_stopped_vehicles <- all_stopped_vehicles + stopped_veh;
+		}
+		all_stopped_vehicles <- remove_duplicates(all_stopped_vehicles);
+		
+		accumulated_stopped_queue <- accumulated_stopped_queue + length(all_stopped_vehicles);
+		stopped_queue_samples <- stopped_queue_samples + 1;
+	}
 	
 	// -------------------------------------------------------------------------
 	// 4. Khối Hành động (Actions)
@@ -895,7 +827,9 @@ species traffic_controller {
 			int cluster_throughput <- sum(my_nodes collect each.throughput_count);
 			float cluster_delay <- sum(my_nodes collect each.total_delay_in_cycle);
 			float avg_delay_this_cluster <- (cluster_throughput > 0) ? cluster_delay / cluster_throughput : 0.0;
-			float avg_queue_this_cluster <- sum(my_nodes collect (each.queue_sample_count > 0 ? each.accumulated_queue / each.queue_sample_count : 0.0));
+			
+			// Non-overlapping queue calculation at traffic_controller level
+			float avg_queue_this_cluster <- stopped_queue_samples > 0 ? accumulated_stopped_queue / stopped_queue_samples : 0.0;
 			
 			total_queue_sum <- total_queue_sum + avg_queue_this_cluster;
 			total_throughput <- total_throughput + cluster_throughput;
@@ -908,7 +842,9 @@ species traffic_controller {
 				+ (avg_queue_this_cluster with_precision 2) + "," 
 				+ cluster_throughput + "," 
 				+ (avg_delay_this_cluster with_precision 2);
-			save row_kpi to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: false;
+			if (is_batch_mode) {
+				save row_kpi to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: false;
+			}
 			
 			loop node over: my_nodes {
 				node.total_delay_in_cycle <- 0.0;
@@ -916,17 +852,44 @@ species traffic_controller {
 				node.accumulated_queue <- 0.0;
 				node.queue_sample_count <- 0;
 			}
+			accumulated_stopped_queue <- 0.0;
+			stopped_queue_samples <- 0;
 		} else {
 			completed_cycles <- completed_cycles + 1;
+			
+			string jnc_friendly_name <- (!empty(my_nodes)) ? my_nodes[0].name : "unknown";
+			if (!empty(my_nodes)) {
+				list<friendly_roi_name_provider> nearby_helpers <- friendly_roi_name_provider where (
+					each.In_roi != nil and each.In_roi contains "_" and 
+					(each distance_to my_nodes[0].location < 60.0)
+				);
+				if (!empty(nearby_helpers)) {
+					friendly_roi_name_provider representative <- nearby_helpers[0];
+					if (representative.In_roi != nil and representative.In_roi != "") {
+						list<string> name_tokens <- string(representative.In_roi) split_with "_";
+						if (!empty(name_tokens) and length(name_tokens) >= 1) {
+							jnc_friendly_name <- upper_case(name_tokens[0]);
+						}
+					}
+				}
+			}
+			
 			float total_delay_sum <- sum(my_nodes collect each.total_delay_in_cycle);
 			float avg_delay <- my_throughput > 0 ? (total_delay_sum / my_throughput) : 0.0;
-			string node_name <- (!empty(my_nodes)) ? my_nodes[0].name : "unknown";
-			string row <- node_name + "," + completed_cycles + "," + round(time) + "," + my_queue + "," + my_throughput + "," + (round(avg_delay * 100) / 100.0);
-			save row to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: false;
+			
+			// Non-overlapping queue calculation at traffic_controller level
+			float avg_queue_this_cluster <- stopped_queue_samples > 0 ? accumulated_stopped_queue / stopped_queue_samples : 0.0;
+			
+			string row <- jnc_friendly_name + "," + completed_cycles + "," + round(time) + "," + (avg_queue_this_cluster with_precision 2) + "," + my_throughput + "," + (round(avg_delay * 100) / 100.0);
+			if (is_batch_mode) {
+				save row to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: false;
+			}
 			loop node over: my_nodes {
 				node.throughput_count <- 0; 
 				node.total_delay_in_cycle <- 0.0;
 			}
+			accumulated_stopped_queue <- 0.0;
+			stopped_queue_samples <- 0;
 			my_throughput <- 0;
 		}
 	}
@@ -976,78 +939,6 @@ species traffic_controller {
 					green_times_per_phase[p] <- min_green + available_remainder * (gamma_p / gamma_total);
 				}
 			}
-		} else {
-			// Tinh toan ap suat (Pressure) theo Cong thuc 4: w = phi_in - sum(R * phi_out)
-			// Gia su ty le re co dinh: 70% di thang, 15% re trai, 15% re phai
-			float p_straight <- 0.7;
-			float p_left <- 0.15;
-			float p_right <- 0.15;
-			
-			float w_N <- 0.0; float w_S <- 0.0; float w_E <- 0.0; float w_W <- 0.0;
-			float gamma1_val <- 0.0;
-			float gamma2_val <- 0.0;
-			loop node over: my_nodes {
-				w_N <- w_N + max(0.0, node.phi_N - (p_straight * node.phi_out_S + p_left * node.phi_out_E + p_right * node.phi_out_W));
-				w_S <- w_S + max(0.0, node.phi_S - (p_straight * node.phi_out_N + p_left * node.phi_out_W + p_right * node.phi_out_E));
-				w_E <- w_E + max(0.0, node.phi_E - (p_straight * node.phi_out_W + p_left * node.phi_out_S + p_right * node.phi_out_N));
-				w_W <- w_W + max(0.0, node.phi_W - (p_straight * node.phi_out_E + p_left * node.phi_out_N + p_right * node.phi_out_S));
-			}
-			// Ap suat tong hop cua pha (Cong thuc 7)
-			// Gia dinh: axis_1 la pha Bac-Nam, axis_2 la pha Dong-Tay
-			// Hệ số năng lực thông hành Clm = 1.0 cho tất cả
-			float gamma1_val_tot <- w_N + w_S;
-			float gamma2_val_tot <- w_E + w_W;
-			float gamma_total <- gamma1_val_tot + gamma2_val_tot;
-			
-			//obj for available time ratio: 1 - L/tau (cong thuc 9)
-			float available_ratio <- 1.0 - (lost_time / cycle_duration);
-			float min_ratio <- min_green / cycle_duration; // kappa/tau
-
-			float lam1 <- 0.0;
-			float lam2 <- 0.0;
-			
-			if (gamma_total <= 0) {
-				// Khong co ap suat: chia deu, van dam bao min
-				lam1 <- available_ratio / 2.0;
-				lam2 <- available_ratio / 2.0;
-			} else {
-				//obj for min green constraint - rang buoc kappa PHAI DUOC AP TRUOC
-				float remainder <- available_ratio - 2.0 * min_ratio;
-				
-				if (remainder <= 0.0) {
-					lam1 <- available_ratio / 2.0;
-					lam2 <- available_ratio / 2.0;
-				} else {
-					// Buoc 2: phan bo phan con lai ty le theo ap suat gamma
-					lam1 <- min_ratio + remainder * (gamma1_val_tot / gamma_total);
-					lam2 <- min_ratio + remainder * (gamma2_val_tot / gamma_total);
-				}
-			}
-			
-			//obj for g_S calculation - cong thuc (11): g_S = lambda*_S x tau
-			g1 <- lam1 * cycle_duration;
-			g2 <- lam2 * cycle_duration;
-			
-			//obj for CBMP verification debug - in ra moi lan tinh chu ky moi
-			// Kiem tra: g1+g2 phai xap xi cycle_duration - lost_time = 116s
-			// Kiem tra: g1 va g2 phai >= min_green = 10s
-			// Kiem tra: neu gamma1 > gamma2 thi g1 > g2 (pha dong xe duoc xanh nhieu hon)
-			intersection target_node <- my_nodes first_with (each.name = "intersection33");
-//			if (target_node != nil) {
-//				float g_total <- round((g1 + g2) * 10) / 10.0;
-//				write "=== [CBMP] Cycle " + cycle + " | controller cho " + target_node.name + " ===";
-//				write "  γ1(axis1): " + (round(gamma1_val_tot * 1000) / 10.0) + "% | γ2(axis2): " + (round(gamma2_val_tot * 1000) / 10.0) + "%";
-//				if (gamma_total <= 0) {
-//					write "  [!] Canh bao: phi = 0, chia deu thoi gian (CBMP chua hoat dong, kiem tra detection zone)";
-//				}
-//				write "  g1(N+S xanh): " + (round(g1 * 10) / 10.0) + "s | g2(E+W xanh): " + (round(g2 * 10) / 10.0) + "s | tong: " + g_total + "s";
-//				bool g1_ok <- g1 >= min_green;
-//				bool g2_ok <- g2 >= min_green;
-//				bool total_ok <- abs(g1 + g2 - (cycle_duration - lost_time)) < 0.5;
-//				write "  Kiem tra: g1>=" + min_green + "s? " + (g1_ok ? "OK" : "FAIL") 
-//				    + " | g2>=" + min_green + "s? " + (g2_ok ? "OK" : "FAIL")
-//				    + " | tong hop le? " + (total_ok ? "OK" : "FAIL");
-//			}
 		}
 	}
 
@@ -1066,21 +957,18 @@ species traffic_controller {
 		float gam2 <- 0.0;
 		loop node over: my_nodes {	
 			// Compute average cycle pressure (smooth feedback - Method 2)
-			node.w_N_paper <- node.paper_step_count > 0 ? (node.w_N_sum / node.paper_step_count) : 0.0;
-			node.w_S_paper <- node.paper_step_count > 0 ? (node.w_S_sum / node.paper_step_count) : 0.0;
-			node.w_E_paper <- node.paper_step_count > 0 ? (node.w_E_sum / node.paper_step_count) : 0.0;
-			node.w_W_paper <- node.paper_step_count > 0 ? (node.w_W_sum / node.paper_step_count) : 0.0;
+			node.w_p1_paper <- node.paper_step_count > 0 ? (node.w_p1_sum / node.paper_step_count) : 0.0;
+			node.w_p2_paper <- node.paper_step_count > 0 ? (node.w_p2_sum / node.paper_step_count) : 0.0;
 			
 			// Reset accumulators for next cycle
-			node.w_N_sum <- 0.0;
-			node.w_S_sum <- 0.0;
-			node.w_E_sum <- 0.0;
-			node.w_W_sum <- 0.0;
+			node.w_p1_sum <- 0.0;
+			node.w_p2_sum <- 0.0;
 			node.paper_step_count <- 0;
 			
+			// Constant c=2.5 as specified in original logic
 			float c <- 2.5;
-			gam1 <- gam1 + c * node.w_N_paper + c * node.w_S_paper;
-			gam2 <- gam2 + c * node.w_E_paper + c * node.w_W_paper;
+			gam1 <- gam1 + c * node.w_p1_paper;
+			gam2 <- gam2 + c * node.w_p2_paper;
 		}
 		float gam_total <- gam1 + gam2;
 
@@ -1109,32 +997,16 @@ species traffic_controller {
 		g1 <- lam1 * cycle_duration;
 		g2 <- lam2 * cycle_duration;
 
-		// Debug log — fires every phase transition (same style as CBMP v1)
-		intersection target_node <- my_nodes first_with (each.name = "intersection35");
-//		if (target_node != nil){
-//			float g_total <- round((g1 + g2) * 10) / 10.0;
-//			write "=== [PAPER-v2] Cycle " + cycle + " | " + target_node.name + " ===";
-//			write "  x: N=" + target_node.x_N + " S=" + target_node.x_S
-//				+ " E=" + target_node.x_E + " W=" + target_node.x_W;
-//			write "  w: N=" + round(target_node.w_N_paper*10)/10.0
-//				+ " S=" + round(target_node.w_S_paper*10)/10.0
-//				+ " E=" + round(target_node.w_E_paper*10)/10.0
-//				+ " W=" + round(target_node.w_W_paper*10)/10.0;
-//			write "  γ1(N+S)=" + round(gam1*10)/10.0
-//				+ " | γ2(E+W)=" + round(gam2*10)/10.0;
-//			if (gam_total <= 0.0) {
-//				write "  [!] Canh bao: x=0, chia deu thoi gian (kiem tra vung detect)";
-//			}
-//			write "  g1(N+S)=" + round(g1*10)/10.0 + "s"
-//				+ " | g2(E+W)=" + round(g2*10)/10.0 + "s"
-//				+ " | tong=" + g_total + "s";
-//			bool g1_ok <- g1 >= min_green;
-//			bool g2_ok <- g2 >= min_green;
-//			bool total_ok <- abs(g1 + g2 - (cycle_duration - lost_time)) < 0.5;
-//			write "  Check: g1>=" + min_green + "s? " + (g1_ok ? "OK" : "FAIL")
-//				+ " | g2>=" + min_green + "s? " + (g2_ok ? "OK" : "FAIL")
-//				+ " | tong hop le? " + (total_ok ? "OK" : "FAIL");
-//		}
+		// Debug: print green time allocation at every phase transition
+		if (debug_mode) {
+			intersection dbg_node <- my_nodes[0];
+			string jname <- (!empty(dbg_node.signal_phases) ? dbg_node.signal_phases[0] : dbg_node.name);
+			write "[PAPER-g] " + jname + " @t=" + round(time) + "s"
+				+ " | gam1(NS)=" + (round(gam1*10)/10.0) + " gam2(EW)=" + (round(gam2*10)/10.0)
+				+ " | g1(NS)=" + (round(g1*10)/10.0) + "s g2(EW)=" + (round(g2*10)/10.0) + "s"
+				+ " | g1+g2=" + (round((g1+g2)*10)/10.0) + "s (expected ~" + (cycle_duration - 2*lost_time) + "s)"
+				+ ((gam_total <= 0.0) ? " [!] No pressure - equal split" : "");
+		}
 	}
 	
 	// -------------------------------------------------------------------------
@@ -1156,19 +1028,57 @@ species traffic_controller {
 		if (use_paper_cbmp) {
 			// --- CBMP v2 (Paper) mode ---
 			cbmp_counter <- cbmp_counter + step;
-			if (is_green) {
-				if (cbmp_counter >= g1) {
-					cbmp_counter <- 0.0;
-					ask my_nodes { do to_red; }
-					is_green <- false;
-				}
-			} else {
-				if (cbmp_counter >= g2) {
-					cbmp_counter <- 0.0;
-					ask my_nodes { do to_green; }
-					is_green <- true;
-					do log_kpi;
-					do compute_green_time_paper;  // recalculate for next cycle
+			// Get phase names from root node (same as Area mode)
+			if (!empty(my_nodes)) {
+				list<string> phases <- my_nodes[0].signal_phases;
+				if (!empty(phases) and length(phases) >= 2) {
+					// Initialize current_paper_phase on first step
+					if (current_paper_phase = "") {
+						current_paper_phase <- phases[0]; // start with NS phase
+					}
+					if (is_green) {
+						if (cbmp_counter >= g1) {
+							cbmp_counter <- 0.0;
+							is_green <- false;
+							current_paper_phase <- phases[1]; // Phase 2: EW active
+							traffic_controller ctrl <- self;
+							// Use my_phase matching - same mechanism as Area mode (no axis dependency)
+							ask traffic_light_visual where (each.my_parent in my_nodes) {
+								state <- (my_phase = ctrl.current_paper_phase) ? "green" : "red";
+							}
+							ask my_nodes { color_fire <- #red; is_green <- false; }
+							// Debug: log phase transition
+							if (debug_mode) {
+								list<traffic_light_visual> green_lights <- traffic_light_visual where (each.my_parent in my_nodes and each.state = "green");
+								list<traffic_light_visual> red_lights <- traffic_light_visual where (each.my_parent in my_nodes and each.state = "red");
+								write "[PAPER-PHASE] @t=" + round(time) + "s: SWITCH -> EW GREEN (phase2=" + phases[1] + ")"
+									+ " | green=" + (green_lights collect each.my_phase) 
+									+ " | red=" + (red_lights collect each.my_phase);
+							}
+						}
+					} else {
+						if (cbmp_counter >= g2) {
+							cbmp_counter <- 0.0;
+							is_green <- true;
+							current_paper_phase <- phases[0]; // Phase 1: NS active
+							traffic_controller ctrl <- self;
+							// Use my_phase matching - same mechanism as Area mode (no axis dependency)
+							ask traffic_light_visual where (each.my_parent in my_nodes) {
+								state <- (my_phase = ctrl.current_paper_phase) ? "green" : "red";
+							}
+							ask my_nodes { color_fire <- #green; is_green <- true; }
+							// Debug: log phase transition
+							if (debug_mode) {
+								list<traffic_light_visual> green_lights <- traffic_light_visual where (each.my_parent in my_nodes and each.state = "green");
+								list<traffic_light_visual> red_lights <- traffic_light_visual where (each.my_parent in my_nodes and each.state = "red");
+								write "[PAPER-PHASE] @t=" + round(time) + "s: SWITCH -> NS GREEN (phase1=" + phases[0] + ")"
+									+ " | green=" + (green_lights collect each.my_phase)
+									+ " | red=" + (red_lights collect each.my_phase);
+							}
+							do log_kpi;
+							do compute_green_time_paper;  // recalculate for next cycle
+						}
+					}
 				}
 			}
 		} else if (use_cbmp) {
@@ -1220,11 +1130,23 @@ species traffic_controller {
 			counter <- counter + step;
 			if (counter >= time_to_change) {
 				counter <- 0.0;
-				ask my_nodes {
-					if (is_green) { do to_red; }
-					else { do to_green; }
-				}
 				is_green <- !is_green;
+				// Use my_phase matching (same as Area mode) - avoids nil axis issue
+				if (!empty(my_nodes)) {
+					list<string> phases <- my_nodes[0].signal_phases;
+					if (!empty(phases) and length(phases) >= 2) {
+						// is_green=true: NS phase (phases[0]), is_green=false: EW phase (phases[1])
+						current_paper_phase <- is_green ? phases[0] : phases[1];
+						traffic_controller ctrl <- self;
+						ask traffic_light_visual where (each.my_parent in my_nodes) {
+							state <- (my_phase = ctrl.current_paper_phase) ? "green" : "red";
+						}
+						ask my_nodes {
+							color_fire <- ctrl.is_green ? #green : #red;
+							is_green <- ctrl.is_green;
+						}
+					}
+				}
 				if (is_green) { do log_kpi; }
 			}
 		}

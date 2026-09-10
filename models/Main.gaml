@@ -37,7 +37,9 @@ global {
 	// false/false = Fixed-time | true/false = CBMP v1 (phi) | false/true = CBMP v2 (Paper)
 	bool use_cbmp <- false;
 	bool use_paper_cbmp <- true;  // Paper-faithful: formula (10)(11)(16), vehicle count + c_{l,m}
-	string algorithm_mode <- "CBMP_Paper" among: ["CBMP_Paper", "CBMP_Area", "FixedTime"];
+	string algorithm_mode <- "CBMP_Area" among: ["CBMP_Paper", "CBMP_Paper_Fair", "CBMP_Area", "FixedTime"];
+	float paper_detection_radius <- 150.0;
+	bool debug_mode <- false; // Enable verbose logging for verification (toggle in experiment)
 	
 	//obj for KPIs (Đo lường hiệu năng)
 	string csv_filename;
@@ -156,8 +158,7 @@ global {
 						each.Out_roi != nil and each.Out_roi != "" and
 						lower_case(each.Out_roi) = src_prefix and
 						each.In_roi != nil and each.In_roi contains "_" and
-						length(each.In_roi split_with "_") >= 3 and
-						upper_case((each.In_roi split_with "_")[2]) = lane_axis
+						length(each.In_roi split_with "_") >= 3
 					);
 					
 					loop link over: downstream_links {
@@ -170,46 +171,41 @@ global {
 						));
 						
 						if (dest != nil) {
+							string dest_axis <- upper_case((link.In_roi split_with "_")[2]);
 							float weight <- r_straight; 
+							if (dest_axis = "LEFT") { weight <- r_left; }
+							else if (dest_axis = "RIGHT") { weight <- r_right; }
+							
 							downstream_pressure_sum <- downstream_pressure_sum + (weight * dest.phi_current);
 						}
 					}
 					
-					self.w_max_pressure <- self.phi_current - downstream_pressure_sum;
+					self.w_max_pressure <- max(0.0, self.phi_current - downstream_pressure_sum);
 				}
 			}
 		}
 
-		if (cycle mod 10 = 0) {
-			list<roi_lane> valid_lanes <- roi_lane where (
-				each.In_roi != nil and each.In_roi != "" and each.In_roi contains "_"
-				and each.phi_current > 0.001   
-			);
-			
-			loop lane over: valid_lanes {
-				string current_p_id <- (lane.phase_id = nil or lane.phase_id = "") ? "INITIALIZING" : lane.phase_id;
-				string row_lane_data <- "" + string(round(time)) + "," 
-					+ lane.In_roi + "," 
-					+ current_p_id + "," 
-					+ (lane.phi_current with_precision 3) + "," 
-					+ (lane.w_max_pressure with_precision 3);
-				// save row_lane_data to: base_output_dir + "ROI_Density_Log_" + csv_filename format: "csv" rewrite: false;
-			}
-		}
+
 	}
 	init {
 		if (algorithm_mode = "CBMP_Paper") {
 			use_paper_cbmp <- true;
 			use_cbmp <- false;
-		} else if (algorithm_mode = "CBMP_Area") {
+			paper_detection_radius <- 150.0;
+		} else if(algorithm_mode = "CBMP_Paper_Fair"){
+			use_paper_cbmp <- true;
+			use_cbmp <- false;
+			paper_detection_radius <- 45.0;
+		}
+		else if (algorithm_mode = "CBMP_Area") {
 			use_paper_cbmp <- false;
 			use_cbmp <- true;
 		} else if (algorithm_mode = "FixedTime") {
 			use_paper_cbmp <- false;
 			use_cbmp <- false;
 		}
-		signal_shp <- use_cbmp ? shape_file("../includes/traffic_signals 8.shp") : shape_file("../includes/traffic_signals 6.shp");
-		roi_lane_shp <- use_cbmp ? shape_file("../includes/ROI_zones 2.shp") : shape_file("../includes/ROI_zones 7.shp");
+		signal_shp <- shape_file("../includes/traffic_signals 8.shp");
+		roi_lane_shp <- shape_file("../includes/ROI_zones 2.shp");
 
 		
 		write "read data";
@@ -221,22 +217,17 @@ global {
 
 		create building from: building_shp;
 		
-		// Load roi_lane dynamically based on algorithm mode (from folder zone when use_cbmp is true)
-		if (use_cbmp) {
-			create roi_lane from: roi_lane_shp with: [
-				phase_id  :: read("phase_id"),
-				area_m2   :: float(read("area_m2")),
-				In_roi    :: read("In_roi"),
-				Out_roi   :: read("Out_roi")
-			];
-		} else {
-			create roi_lane from: roi_lane_shp with: [
-				u_node    :: read("u_node"),
-				d_node    :: read("d_node"),
-				phase_id  :: read("phase_id"),
-				area_m2   :: float(read("area_m2")) 
-			]; 
-		}
+		// Load roi_lane from shapefile 8 schema for all modes to align GIS structures
+		create roi_lane from: roi_lane_shp with: [
+			phase_id  :: read("phase_id"),
+			area_m2   :: float(read("area_m2")),
+			In_roi    :: read("In_roi"),
+			Out_roi   :: read("Out_roi")
+		];
+		
+		create friendly_roi_name_provider from: shape_file("../includes/ROI_zones 2.shp") with: [
+			In_roi :: read("In_roi")
+		];
         
 		graph temp_graph <- as_edge_graph(road);
 		loop v over: temp_graph.vertices {
@@ -246,114 +237,42 @@ global {
 		}
 		road_network <- as_driving_graph(road, intersection);
 		
-		// Initialize signal points dynamically based on algorithm mode
-		if (!use_cbmp) {
-			create gis_signal_point from: signal_shp with: [osm_id :: string(read("osm_id"))];
-
-			// =========================================================================
-			// GIAI ĐOẠN 1: GOM CỤM CHO NGÃ TƯ ĐẶC BIỆT (GÁN CỨNG QUA ID 1, 2, 3, 4)
-			// =========================================================================
-			list<gis_signal_point> special_signals <- list<gis_signal_point>(gis_signal_point) where (
-				each.osm_id = "1" or each.osm_id = "2" or each.osm_id = "3" or each.osm_id = "4"
-			);
-			
-			if (!empty(special_signals)) {
-				// Xác định tâm thực tế và tìm nút giao gần nhất cho cụm đặc biệt này
-				point real_center <- mean(special_signals collect each.location);
-				intersection target_node <- (intersection) closest_to(real_center);
-				
-				if (target_node != nil) {
-					ask target_node {
-						is_traffic_signal <- true;
-						// Đồng bộ các tuyến đường cho ngã tư đặc biệt
-						do compute_crossing(sig_pts: special_signals collect each.location, center_pt: real_center);
-					}
-					
-					// Tạo các thực thể đèn hiển thị và gán cứng Trục theo cặp đối diện 1-3 và 2-4
-					loop sg_agent over: special_signals {
-						create traffic_light_visual {
-							location <- sg_agent.location;
-							my_parent <- target_node;
-							self.osm_id <- sg_agent.osm_id;
-							
-							if (self.osm_id = "1" or self.osm_id = "3") {
-								axis <- "axis_1";
-							} else if (self.osm_id = "2" or self.osm_id = "4") {
-								axis <- "axis_2";
-							}
-						}
-					}
-				}
-			}
-
-			// =========================================================================
-			// GIAI ĐOẠN 2: GOM CỤM CHO CÁC NGÃ TƯ TỰ ĐỘNG CÒN LẠI (TÍNH TOÁN THEO GÓC)
-			// =========================================================================
-			list<gis_signal_point> free_signals <- list<gis_signal_point>(gis_signal_point) where (
-				each.osm_id != "1" and each.osm_id != "2" and each.osm_id != "3" and each.osm_id != "4"
-			);
-			
-			loop while: !empty(free_signals) {
-				gis_signal_point head_sg <- free_signals[0];
-				
-				list<gis_signal_point> cluster_sg <- free_signals where (each distance_to head_sg < 70.0);
-				
-				if (length(cluster_sg) >= 2) {
-					point real_center <- mean(cluster_sg collect each.location);
-					intersection target_node <- (intersection) closest_to(real_center);
-					
-					if (target_node != nil) {
-						ask target_node {
-							is_traffic_signal <- true;
-							do compute_crossing(sig_pts: cluster_sg collect each.location, center_pt: real_center);
-						}
-						
-						loop sg_agent over: cluster_sg {
-							create traffic_light_visual {
-								location <- sg_agent.location;
-								my_parent <- target_node;
-								
-								// Sử dụng đúng logic góc nguyên bản đã chạy đúng của bạn
-								float ang <- self.location towards real_center;
-								float norm_ang <- ang mod 180;
-								if (norm_ang > 45 and norm_ang < 135) {
-									axis <- "axis_1";
-								} else {
-									axis <- "axis_2";
-								}
-							}
-						}
-					}
-				}
-				free_signals <- free_signals - cluster_sg;
-			}
-		} else {
-			// CBMP Area (ROI) mode: Load visual lights directly from signal_shp (from folder zone)
-			create traffic_light_visual from: signal_shp with: [
-				osm_id   :: string(read("osm_id")),
-				my_phase :: upper_case(string(read("sig_phase"))) 
-			];
-			
-			// Filter: only keep lights ending in _STRAIGHT (from folder zone)
-			ask traffic_light_visual {
-				if (self.my_phase = nil or self.my_phase = "") {
+		// Initialize visual lights directly from signal_shp (Shapefile 8) for all modes
+		create traffic_light_visual from: signal_shp with: [
+			osm_id   :: string(read("osm_id")),
+			my_phase :: upper_case(string(read("sig_phase"))) 
+		];
+		
+		// Filter: only keep straight lights ending in _STRAIGHT
+		ask traffic_light_visual {
+			if (self.my_phase = nil or self.my_phase = "") {
+				do die;
+			} else {
+				string phase <- self.my_phase;
+				list<string> parts <- phase split_with "_";
+				if (!empty(parts) and upper_case(last(parts)) != "STRAIGHT") {
 					do die;
-				} else {
-					string phase <- self.my_phase;
-					list<string> parts <- phase split_with "_";
-					if (!empty(parts) and upper_case(last(parts)) != "STRAIGHT") {
-						do die;
-					}
 				}
 			}
-			
-			ask traffic_light_visual {
-				point my_loc <- self.location;
-				list<intersection> candidate_nodes <- intersection where (each distance_to my_loc <= 80.0);
-				if (!empty(candidate_nodes)) {
-					self.my_parent <- candidate_nodes closest_to my_loc;
-					self.my_parent.is_traffic_signal <- true;
-				}
+		}
+		
+		// Associate lights with the closest intersection node
+		ask traffic_light_visual {
+			point my_loc <- self.location;
+			list<intersection> candidate_nodes <- intersection where (each distance_to my_loc <= 80.0);
+			if (!empty(candidate_nodes)) {
+				self.my_parent <- candidate_nodes closest_to my_loc;
+				self.my_parent.is_traffic_signal <- true;
+			}
+		}
+		
+		// Assign axis identifiers to support color changing in Paper and Fixed-time modes
+		ask traffic_light_visual {
+			string phase_upper <- upper_case(self.my_phase);
+			if (phase_upper contains "_NS" or phase_upper contains "_SN") {
+				self.axis <- "axis_1";
+			} else if (phase_upper contains "_EW" or phase_upper contains "_WE") {
+				self.axis <- "axis_2";
 			}
 		}
 
@@ -381,16 +300,21 @@ global {
 		else if (traffic_demand = "Very High (2000 vph)") { demand_str <- "VeryHigh_2000"; }
 		else if (traffic_demand = "Extreme (2400 vph)") { demand_str <- "Extreme_2400"; }
 		
-		string mode_str <- use_paper_cbmp ? "CBMP_Paper" : (use_cbmp ? "CBMP_Area" : "FixedTime");
-		replicate_id <- int(self) mod 10 + 1;
+		string mode_str <-  (algorithm_mode = "CBMP_Paper_Fair") ? "CBMP_Paper_Fair" : (use_paper_cbmp ? "CBMP_Paper" : (use_cbmp ? "CBMP_Area" : "FixedTime"));
+		// --- CỨU HỘ KHI CHẠY PARALLEL BỊ ĐỨNG MÁY ---
+		// Nếu chạy bị rớt rep cuối (ví dụ thiếu rep 9 và 10), hãy BẬT 2 dòng dưới và TẮT dòng gốc.
+		// Nhớ sửa lại số `repeat: 2` ở experiment dưới cùng nhé!
+//		 replicate_id <- int(self) mod 2 + 9;
+		// ---------------------------------------------
+		
+		replicate_id <- int(self) mod 10 + 1; // <-- Dòng gốc (Tắt dòng này nếu bật cứu hộ)
+		
 		string rep_str <- is_batch_mode ? "_rep" + replicate_id : "";
 		csv_filename <- mode_str + "_" + demand_str + rep_str + ".csv";
-		save "Intersection_Name,Cycle,Time_Seconds,Queue_Length,Throughput_per_Cycle,Average_Delay" to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: true;
-		
-		if (use_cbmp) {
-			// save "Intersection_Name,Cycle,Phase_NS,Phase_EW" to: base_output_dir + "Phase_GreenTime_Log_" + csv_filename format: "csv" rewrite: true;
-			// save "Time_Seconds,Lane_ID,Phase_ID,Density_Phi,Pressure_W" to: base_output_dir + "ROI_Density_Log_" + csv_filename format: "csv" rewrite: true;
+		if (is_batch_mode) {
+			save "Intersection_Name,Cycle,Time_Seconds,Queue_Length,Throughput_per_Cycle,Average_Delay" to: base_output_dir + "KPI_Result_" + csv_filename format: "csv" rewrite: true;
 		}
+
 		
 		list<intersection> signal_nodes <- intersection where (each.is_traffic_signal);
 		loop while: not empty(signal_nodes){
@@ -410,12 +334,11 @@ global {
 		}
 
 		// Assign phase IDs to ROI lanes based on their axis (100% faithful to zone folder)
-		if (use_cbmp) {
+		if (true) {
 			ask intersection where (each.is_traffic_signal) {
 				intersection current_intersection <- self;
 				list<roi_lane> local_lanes <- roi_lane where (
 					each.In_roi != nil and each.In_roi != "" and each.In_roi contains "_" 
-					and each.phase_id != nil and each.phase_id != "" and upper_case(each.phase_id) != "NONE"
 					and (current_intersection.location distance_to each.location < 120.0)
 				);
 				self.my_lanes <- local_lanes;
@@ -455,6 +378,31 @@ global {
 				}
 			}
 		}
+		
+		// Call compute_crossing for all signal nodes AFTER phase assignment
+		// This initializes ang_in_N/S/E/W for correct directional vehicle counting in Paper mode
+		ask intersection where (each.is_traffic_signal) {
+			list<point> sig_pts <- (traffic_light_visual where (each.my_parent = self)) collect each.location;
+			if (!empty(sig_pts)) {
+				do compute_crossing(sig_pts, self.location);
+			}
+		}
+		
+		// Re-initialize Paper/Fixed-time mode lights using my_phase (after signal_phases are set)
+		if (!use_cbmp) {
+			ask traffic_controller {
+				if (!empty(my_nodes) and !empty(my_nodes[0].signal_phases)) {
+					list<string> phases <- my_nodes[0].signal_phases;
+					if (length(phases) >= 2) {
+						current_paper_phase <- phases[0]; // start with NS phase (green)
+						traffic_controller ctrl <- self;
+						ask traffic_light_visual where (each.my_parent in my_nodes) {
+							state <- (my_phase = ctrl.current_paper_phase) ? "green" : "red";
+						}
+					}
+				}
+			}
+		}
 	}
 
 	reflex maintain_population {
@@ -465,8 +413,8 @@ global {
 			float spawn_interval <- 4.0; // Medium (900 vph) default
 			if (traffic_demand = "Low (400 vph)") { spawn_interval <- 9.0; } //vehicle/hour =  3600/400 = 9s 1 vehicle
 			else if (traffic_demand = "High (1400 vph)") { spawn_interval <- 2.57; }
-			else if (traffic_demand = "Very High (2000 vph)") { spawn_interval <- 1.8; }
-			else if (traffic_demand = "Extreme (2400 vph)") { spawn_interval <- 1.5; }
+//			else if (traffic_demand = "Very High (2000 vph)") { spawn_interval <- 1.8; }
+//			else if (traffic_demand = "Extreme (2400 vph)") { spawn_interval <- 1.5; }
 			
 			// Adjust spawn interval based on the 8 spawn branches
 			int n_branches <- 8;
@@ -533,10 +481,11 @@ global {
 
 experiment test type: gui {
 	parameter "Kịch bản lưu lượng:" var: traffic_demand;
+	parameter "Thuật toán điều khiển:" var: algorithm_mode;
+	parameter "Debug logging (xem console):" var: debug_mode;
 //	parameter "Lưu lượng xe máy (Tùy chỉnh):" var: target_motobike min: 0 max: 3000;
 //	parameter "Lưu lượng ô tô (Tùy chỉnh):" var: target_car min: 0 max: 2000;
 //	parameter "Lưu lượng xe tải (Tùy chỉnh):" var: target_truck min: 0 max: 1000;
-	parameter "Thuật toán điều khiển:" var: algorithm_mode;
 	//parameter "Kịch bản di chuyển:" var: routing_scenario among: ["Bình thường", "Trục dọc kẹt cứng", "Đổ dồn về phía Đông"];
 	output {
 		display main type: 3d background: #lightskyblue axes: false {
@@ -573,11 +522,7 @@ experiment test type: gui {
 
 experiment batch_run type: batch keep_seed: false repeat: 10 until: stop_simulation parallel: true {
 //	"Low (400 vph)", "Medium (900 vph)", "High (1400 vph)"
-	parameter "Kịch bản lưu lượng:" var: traffic_demand among: ["Medium (900 vph)"];
-	parameter "Thuật toán điều khiển:" var: algorithm_mode among: ["CBMP_Paper"];
+	parameter "Kịch bản lưu lượng:" var: traffic_demand among: ["Low (400 vph)"];
+	parameter "Thuật toán điều khiển:" var: algorithm_mode among: ["CBMP_Area"];
 	parameter "Batch mode:" var: is_batch_mode init: true;
-	
-	reflex write_final_summary {
-		ask simulations { do write_summary; }
-	}
 }
