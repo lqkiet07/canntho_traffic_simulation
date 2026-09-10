@@ -11,7 +11,7 @@ model Intersection
 import "Road.gaml"
 import "Roi.gaml"
 import "Vehicles.gaml"
-import "Main.gaml"
+//import "Main.gaml"
 
 // =========================================================================
 // SPECIES: GIS_SIGNAL_POINT
@@ -288,7 +288,7 @@ species intersection skills: [intersection_skill] {
 //		}
 	}
 
-	action to_green {
+	action to_green() {
 		// update visual state for green light
 		color_fire <- #green;
 		is_green <- true;
@@ -303,7 +303,7 @@ species intersection skills: [intersection_skill] {
 		}
 	}
 
-	action to_red {
+	action to_red() {
 		// update visual state for red light
 		color_fire <- #red;
 		is_green <- false;
@@ -775,7 +775,7 @@ species traffic_controller {
 	// -------------------------------------------------------------------------
 	// 4. Khối Hành động (Actions)
 	// -------------------------------------------------------------------------
-	action log_kpi {
+	action log_kpi() {
 		if (stop_simulation) { return; }
 		if (use_cbmp) {
 			completed_cycles <- completed_cycles + 1;
@@ -895,7 +895,7 @@ species traffic_controller {
 	}
 	
 	//obj for compute_green_time - tinh g1/g2 cho CHU KY KE TIEP dua vao phi hien tai
-	action compute_green_time {
+	action compute_green_time() {
 		if (use_cbmp) {
 			if (empty(my_nodes)) { return; }
 			intersection node <- my_nodes[0]; 
@@ -948,7 +948,7 @@ species traffic_controller {
 	// Implements formula (16): λ* = arg max Σ λ_S * γ_S  (LP, 2-phase closed form)
 	// c_{l,m} = road.num_lanes (capacity proxy)
 	// =========================================================================
-	action compute_green_time_paper {
+	action compute_green_time_paper() {
 		// Formula (11): γ_S = Σ c_{l,m} * w_{l,m} * S_{l,m}
 		// Phase 1 (axis_1 green): N and S directions → S_{l,m}=1
 		// Phase 2 (axis_2 green): E and W directions → S_{l,m}=1

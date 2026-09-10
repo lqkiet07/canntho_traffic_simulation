@@ -20,7 +20,7 @@ species vehicle skills: [driving] {
 	float total_delay <- 0.0;
 
 	init {
-		right_side_driving <- true;
+		right_side_driving <- true; 
 		safety_distance_coeff <- 3.0;
 	}
 //	reflex debug_roi {

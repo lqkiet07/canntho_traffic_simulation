@@ -14,13 +14,15 @@ import "Vehicles.gaml"
 
 /* Insert your model definition here */
 global {
-	file road_shp <- shape_file("../includes/road 4.shp");
-	file building_shp <- shape_file("../includes/building.shp");
-	// Dynamic shapefile assignment based on algorithm mode (from folder zone when use_cbmp is true)
-	file signal_shp <- use_cbmp ? shape_file("../includes/traffic_signals 8.shp") : shape_file("../includes/traffic_signals 6.shp");
-	file roi_lane_shp <- use_cbmp ? shape_file("../includes/ROI_zones 2.shp") : shape_file("../includes/ROI_zones 7.shp");
+		image_file background_img<-image_file("../includes/2/bg.png");
 	
-	geometry shape <- envelope(road_shp);
+	file road_shp <- shape_file("../includes/2/road 4.shp");
+	file building_shp <- shape_file("../includes/2/building.shp");
+	// Dynamic shapefile assignment based on algorithm mode (from folder zone when use_cbmp is true)
+	file signal_shp <- use_cbmp ? shape_file("../includes/2/traffic_signals 8.shp") : shape_file("../includes/2/traffic_signals 6.shp");
+	file roi_lane_shp <- use_cbmp ? shape_file("../includes/2/ROI_zones 2.shp") : shape_file("../includes/2/ROI_zones 7.shp");
+	geometry shape <- envelope((road_shp)  );
+//	geometry shape <- envelope(road_shp+building_shp);
 	graph road_network;
 	float step <- 0.5 #s;
 	int target_motobike <- 1000;
@@ -82,7 +84,7 @@ global {
 		}
 	}
 	// Write total summary row dynamically (Rewrite:true ensures the last line is always updated)
-	action write_summary {
+	action write_summary() {
 		if (total_samples > 0) {
 			float avg_queue <- total_queue_sum / total_samples;
 			float avg_delay <- (total_throughput > 0) ? total_delay_sum / total_throughput : 0.0;
@@ -204,8 +206,8 @@ global {
 			use_paper_cbmp <- false;
 			use_cbmp <- false;
 		}
-		signal_shp <- shape_file("../includes/traffic_signals 8.shp");
-		roi_lane_shp <- shape_file("../includes/ROI_zones 2.shp");
+		signal_shp <- shape_file("../includes/2/traffic_signals 8.shp");
+		roi_lane_shp <- shape_file("../includes/2/ROI_zones 2.shp");
 
 		
 		write "read data";
@@ -215,7 +217,9 @@ global {
 		    width :: float(read("road_width")) 
 		];
 
-		create building from: building_shp;
+		create building from: building_shp{
+			texture <- textures[rnd(9)];
+		}
 		
 		// Load roi_lane from shapefile 8 schema for all modes to align GIS structures
 		create roi_lane from: roi_lane_shp with: [
@@ -225,7 +229,7 @@ global {
 			Out_roi   :: read("Out_roi")
 		];
 		
-		create friendly_roi_name_provider from: shape_file("../includes/ROI_zones 2.shp") with: [
+		create friendly_roi_name_provider from: shape_file("../includes/2/ROI_zones 2.shp") with: [
 			In_roi :: read("In_roi")
 		];
         
@@ -242,6 +246,14 @@ global {
 			osm_id   :: string(read("osm_id")),
 			my_phase :: upper_case(string(read("sig_phase"))) 
 		];
+		
+//		string signal_str <- use_cbmp ? "../includes/2/traffic_signals 8.shp" : ("../includes/2/traffic_signals 6.shp");
+//		string roi_lane_str <- use_cbmp ? "../includes/2/ROI_zones 2.shp" : ("../includes/2/ROI_zones 7.shp");
+//		save road to:"../includes/2/road 4.shp" crs:"3857";
+//		save building to:"../includes/2/building.shp" crs:"3857";
+//		save roi_lane to:roi_lane_str crs:"3857";
+//		save friendly_roi_name_provider to:"../includes/2/ROI_zones 2.shp" crs:"3857";
+//		save traffic_light_visual to:signal_str crs:"3857";
 		
 		// Filter: only keep straight lights ending in _STRAIGHT
 		ask traffic_light_visual {
@@ -488,9 +500,12 @@ experiment test type: gui {
 //	parameter "Lưu lượng xe tải (Tùy chỉnh):" var: target_truck min: 0 max: 1000;
 	//parameter "Kịch bản di chuyển:" var: routing_scenario among: ["Bình thường", "Trục dọc kẹt cứng", "Đổ dồn về phía Đông"];
 	output {
-		display main type: 3d background: #lightskyblue axes: false {
+		display main type: 3d background: #black axes: false {			
+			picture background_img;
+		
 			species road refresh: false;
 			species roi_lane refresh: true;
+			species building aspect:textured refresh: false;
 			species motobike;
 			species car;
 			species truck;
