@@ -14,7 +14,7 @@ import "Vehicles.gaml"
 
 /* Insert your model definition here */
 global {
-		image_file background_img<-image_file("../includes/2/bg.png");
+		image_file background_img<-image_file("../includes/2/bg1.png");
 	
 	file road_shp <- shape_file("../includes/2/road 4.shp");
 	file building_shp <- shape_file("../includes/2/building.shp");
@@ -423,7 +423,7 @@ global {
 			spawn_timer <- spawn_timer + step;
 			
 			float spawn_interval <- 4.0; // Medium (900 vph) default
-			if (traffic_demand = "Low (400 vph)") { spawn_interval <- 9.0; } //vehicle/hour =  3600/400 = 9s 1 vehicle
+			if (traffic_demand = "Low (400 vph)") { spawn_interval <- 0.01; } //vehicle/hour =  3600/400 = 9s 1 vehicle
 			else if (traffic_demand = "High (1400 vph)") { spawn_interval <- 2.57; }
 //			else if (traffic_demand = "Very High (2000 vph)") { spawn_interval <- 1.8; }
 //			else if (traffic_demand = "Extreme (2400 vph)") { spawn_interval <- 1.5; }
